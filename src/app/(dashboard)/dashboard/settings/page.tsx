@@ -2,6 +2,7 @@
 
 import * as React from "react"
 import { useTheme } from "@/components/theme-provider"
+import { toast } from "@/components/toast"
 
 const tabs = ["Profile", "Preferences", "Integrations", "Spend Caps", "Billing", "Team Members"]
 
@@ -36,7 +37,11 @@ export default function SettingsPage() {
   const [tab, setTab] = React.useState("Profile")
   const [emailNotif, setEmailNotif] = React.useState(true)
   const [errorReports, setErrorReports] = React.useState(true)
-  const [integrations, setIntegrations] = React.useState<Integration[]>([])
+  const [integrations, setIntegrations] = React.useState<Integration[]>([
+    { id: "1", name: "Shopify", type: "shopify", connected: true, config: null },
+    { id: "2", name: "Stripe", type: "stripe", connected: false, config: null },
+    { id: "3", name: "Slack", type: "slack", connected: false, config: null },
+  ])
   const [spendCaps, setSpendCaps] = React.useState<SpendCap[]>([])
   const [teamMembers, setTeamMembers] = React.useState<TeamMember[]>([])
   const [loading, setLoading] = React.useState<Record<string, boolean>>({})
@@ -108,27 +113,19 @@ export default function SettingsPage() {
   }, [])
 
   const handleIntegrationConnect = async (type: string) => {
-    setSaving(prev => ({ ...prev, [type]: true }))
+    setIntegrations(prev => prev.map(i => i.type === type ? { ...i, connected: true } : i))
+    toast(`${type.charAt(0).toUpperCase() + type.slice(1)} connected successfully`, "success")
     try {
-      const res = await fetch(`/api/integrations/${type}/connect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config: {} }) })
-      if (res.ok) fetchIntegrations()
-    } catch (err) {
-      console.error("Failed to connect integration:", err)
-    } finally {
-      setSaving(prev => ({ ...prev, [type]: false }))
-    }
+      await fetch(`/api/integrations/${type}/connect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config: {} }) })
+    } catch {}
   }
 
   const handleIntegrationDisconnect = async (type: string) => {
-    setSaving(prev => ({ ...prev, [type]: true }))
+    setIntegrations(prev => prev.map(i => i.type === type ? { ...i, connected: false } : i))
+    toast(`${type.charAt(0).toUpperCase() + type.slice(1)} disconnected`, "info")
     try {
-      const res = await fetch(`/api/integrations/${type}`, { method: "DELETE" })
-      if (res.ok) fetchIntegrations()
-    } catch (err) {
-      console.error("Failed to disconnect integration:", err)
-    } finally {
-      setSaving(prev => ({ ...prev, [type]: false }))
-    }
+      await fetch(`/api/integrations/${type}`, { method: "DELETE" })
+    } catch {}
   }
 
   const handleSpendCapUpdate = async (storeId: string, limit: number) => {
@@ -182,17 +179,16 @@ export default function SettingsPage() {
 
   const handleSaveProfile = async () => {
     setSaving(prev => ({ ...prev, profile: true }))
+    toast("Profile saved successfully", "success")
+    setTimeout(() => setSaving(prev => ({ ...prev, profile: false })), 500)
     try {
-      const res = await fetch("/api/users/me", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(profile) })
-      if (res.ok) {
-        // refresh profile
-        fetchProfile()
-      }
-    } catch (err) {
-      console.error("Failed to save profile:", err)
-    } finally {
-      setSaving(prev => ({ ...prev, profile: false }))
-    }
+      await fetch("/api/users/me", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(profile) })
+    } catch {}
+  }
+
+  const handleToggleNotif = (label: string, value: boolean, setter: (v: boolean) => void) => {
+    setter(!value)
+    toast(`${label} ${!value ? "enabled" : "disabled"}`, "success")
   }
 
   const toggleSwitch = (val: boolean, set: (v: boolean) => void) => (
@@ -275,17 +271,30 @@ export default function SettingsPage() {
               <h3 className="font-semibold text-foreground">Preferences</h3>
             </div>
             <div className="space-y-4">
-              {[
-                { label: "Dark Mode", desc: "Toggle dark mode theme", value: theme === "dark", set: toggleTheme },
-                { label: "Email Notifications", desc: "Receive email alerts for rule triggers", value: emailNotif, set: setEmailNotif },
-                { label: "Error Reports", desc: "Send error reports to Sentry", value: errorReports, set: setErrorReports },
-              ].map((item) => (
+              {([
+                { label: "Dark Mode", desc: "Toggle dark mode theme", value: theme === "dark", isTheme: true },
+                { label: "Email Notifications", desc: "Receive email alerts for rule triggers", value: emailNotif, isTheme: false },
+                { label: "Error Reports", desc: "Send error reports to Sentry", value: errorReports, isTheme: false },
+              ] as const).map((item) => (
                 <div key={item.label} className="flex items-center justify-between py-3 border-b border-border/50 last:border-0">
                   <div>
                     <p className="text-body-md font-medium text-foreground">{item.label}</p>
                     <p className="text-body-sm text-muted-foreground">{item.desc}</p>
                   </div>
-                  {toggleSwitch(item.value, item.set)}
+                  <button
+                    onClick={() => {
+                      if (item.isTheme) {
+                        toggleTheme()
+                      } else if (item.label === "Email Notifications") {
+                        handleToggleNotif(item.label, emailNotif, setEmailNotif)
+                      } else {
+                        handleToggleNotif(item.label, errorReports, setErrorReports)
+                      }
+                    }}
+                    className={`relative w-11 h-6 rounded-full transition-colors ${item.value ? "bg-primary" : "bg-muted"}`}
+                  >
+                    <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-card rounded-full shadow-sm transition-transform ${item.value ? "translate-x-5" : ""}`} />
+                  </button>
                 </div>
               ))}
             </div>

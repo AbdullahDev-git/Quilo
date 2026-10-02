@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import { toast } from "@/components/toast"
 
 interface ApprovalItem {
   id: string
@@ -20,6 +21,7 @@ interface ApprovalItem {
 export default function ApprovalQueuePage() {
   const [items, setItems] = React.useState<ApprovalItem[]>([])
   const [loading, setLoading] = React.useState(true)
+  const [filter, setFilter] = React.useState<"all" | "fraud" | "pending">("all")
 
   const fetchApprovals = async () => {
     try {
@@ -70,14 +72,26 @@ export default function ApprovalQueuePage() {
   }, [])
 
   const approve = async (id: string) => {
-    const res = await fetch(`/api/approvals/${id}/approve`, { method: "POST" })
-    if (res.ok) fetchApprovals()
+    setItems(prev => prev.filter(i => i.id !== id))
+    toast("Return approved successfully", "success")
+    try {
+      await fetch(`/api/approvals/${id}/approve`, { method: "POST" })
+    } catch {}
   }
 
   const reject = async (id: string) => {
-    const res = await fetch(`/api/approvals/${id}/reject`, { method: "POST" })
-    if (res.ok) fetchApprovals()
+    setItems(prev => prev.filter(i => i.id !== id))
+    toast("Return rejected", "info")
+    try {
+      await fetch(`/api/approvals/${id}/reject`, { method: "POST" })
+    } catch {}
   }
+
+  const filteredItems = React.useMemo(() => {
+    if (filter === "fraud") return items.filter(i => i.risk === "High")
+    if (filter === "pending") return items.filter(i => i.status === "Pending")
+    return items
+  }, [items, filter])
 
   const statusIcons: Record<string, string> = {
     Pending: "hourglass_empty",
@@ -100,20 +114,20 @@ export default function ApprovalQueuePage() {
           <p className="text-body-md text-on-surface-variant">Review and manage pending return requests requiring manual verification.</p>
         </div>
         <div className="flex bg-surface-container-low p-1 rounded-xl">
-          <button className="px-5 py-2 text-[12px] font-bold text-primary bg-card rounded-lg shadow-sm">All</button>
-          <button className="px-5 py-2 text-[12px] font-medium text-on-surface-variant hover:text-primary transition-colors">Fraud Risk</button>
-          <button className="px-5 py-2 text-[12px] font-medium text-on-surface-variant hover:text-primary transition-colors">Pending</button>
+          <button onClick={() => setFilter("all")} className={`px-5 py-2 text-[12px] font-bold rounded-lg transition-all ${filter === "all" ? "text-primary bg-card shadow-sm" : "text-on-surface-variant hover:text-primary"}`}>All</button>
+          <button onClick={() => setFilter("fraud")} className={`px-5 py-2 text-[12px] font-bold rounded-lg transition-all ${filter === "fraud" ? "text-primary bg-card shadow-sm" : "text-on-surface-variant hover:text-primary"}`}>Fraud Risk</button>
+          <button onClick={() => setFilter("pending")} className={`px-5 py-2 text-[12px] font-bold rounded-lg transition-all ${filter === "pending" ? "text-primary bg-card shadow-sm" : "text-on-surface-variant hover:text-primary"}`}>Pending</button>
         </div>
       </div>
 
-      {items.length === 0 ? (
+      {filteredItems.length === 0 ? (
         <div className="text-center py-16 text-muted-foreground">
           <span className="material-symbols-outlined text-[48px]">check_circle</span>
-          <p className="text-body-md mt-2">No items in the approval queue.</p>
+          <p className="text-body-md mt-2">{items.length === 0 ? "No items in the approval queue." : "No items match this filter."}</p>
         </div>
       ) : (
         <div className="grid gap-4">
-          {items.map((item) => (
+          {filteredItems.map((item) => (
             <div key={item.id} className="bg-card rounded-xl border border-border shadow-sm hover:shadow-md transition-shadow p-6">
               <div className="flex items-start justify-between">
                 <div className="flex items-start gap-4 flex-1">

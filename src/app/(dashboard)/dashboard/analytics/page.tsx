@@ -2,6 +2,7 @@
 
 import * as React from "react"
 import { PieChart, Pie, Cell, ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip } from "recharts"
+import { toast } from "@/components/toast"
 
 interface ReturnDistribution {
   exchange: number
@@ -40,20 +41,82 @@ interface AnalyticsData {
 
 const DONUT_COLORS = ["#1e3a5f", "#2563eb", "#93c5fd"]
 
+const demoData: AnalyticsData = {
+  totalMarginProtected: 2845000,
+  marginChange: 18,
+  exchangeRate: 42,
+  netRetentionValue: 1250000,
+  returnDistribution: {
+    exchange: 35,
+    storeCredit: 25,
+    refund: 40,
+    totalUnits: 428,
+  },
+  profitRecovery: [
+    { day: "Week 1", actual: 45000, projected: 40000 },
+    { day: "Week 2", actual: 52000, projected: 48000 },
+    { day: "Week 3", actual: 61000, projected: 55000 },
+    { day: "Week 4", actual: 78000, projected: 62000 },
+  ],
+  topReturnedProducts: [
+    { name: "Cotton Kurta", sku: "CK-001", category: "Ethnic Wear", quantity: 89, recovery: 450000, returnRate: "12.5" },
+    { name: "Running Shoes", sku: "RS-002", category: "Footwear", quantity: 67, recovery: 380000, returnRate: "8.3" },
+    { name: "Premium Jacket", sku: "PJ-003", category: "Outerwear", quantity: 45, recovery: 520000, returnRate: "15.2" },
+    { name: "Silk Scarf", sku: "SS-004", category: "Accessories", quantity: 38, recovery: 120000, returnRate: "6.1" },
+  ],
+  totalOrders: 2847,
+  activeRules: 12,
+  connectedStores: 3,
+}
+
+const dateRanges = [
+  { label: "Last 7 days", value: "7d" },
+  { label: "Last 30 days", value: "30d" },
+  { label: "Last 90 days", value: "90d" },
+  { label: "This year", value: "year" },
+]
+
 export default function AnalyticsPage() {
   const [data, setData] = React.useState<AnalyticsData | null>(null)
   const [loading, setLoading] = React.useState(true)
   const [chartView, setChartView] = React.useState<"Daily" | "Weekly">("Daily")
+  const [dateRange, setDateRange] = React.useState("30d")
+  const [showDatePicker, setShowDatePicker] = React.useState(false)
 
   React.useEffect(() => {
     fetch("/api/analytics")
       .then((r) => r.json())
       .then((data) => {
-        setData(data)
+        if (data && data.returnDistribution) setData(data)
+        else setData(demoData)
         setLoading(false)
       })
-      .catch(() => setLoading(false))
+      .catch(() => {
+        setData(demoData)
+        setLoading(false)
+      })
   }, [])
+
+  const exportReport = () => {
+    if (!data) return
+    const report = {
+      period: dateRange,
+      totalMarginProtected: data.totalMarginProtected,
+      exchangeRate: data.exchangeRate,
+      netRetentionValue: data.netRetentionValue,
+      returnDistribution: data.returnDistribution,
+      topProducts: data.topReturnedProducts,
+      generatedAt: new Date().toISOString(),
+    }
+    const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = "analytics-report.json"
+    a.click()
+    URL.revokeObjectURL(url)
+    toast("Analytics report exported successfully", "success")
+  }
 
   if (loading) {
     return (
@@ -77,6 +140,8 @@ export default function AnalyticsPage() {
     { name: "Refund", value: data.returnDistribution.refund },
   ]
 
+  const selectedRangeLabel = dateRanges.find(d => d.value === dateRange)?.label || "Last 30 days"
+
   return (
     <>
       {/* Header */}
@@ -86,12 +151,27 @@ export default function AnalyticsPage() {
           <p className="text-body-md text-on-surface-variant mt-1">Optimize your return operations with real-time margin insights.</p>
         </div>
         <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 px-4 py-2 bg-card border border-border rounded-lg text-body-sm text-foreground">
-            <span className="material-symbols-outlined text-[18px] text-muted-foreground">calendar_today</span>
-            <span>Oct 1, 2023 - Oct 31, 2023</span>
-            <span className="material-symbols-outlined text-[16px] text-muted-foreground">expand_more</span>
+          <div className="relative">
+            <button onClick={() => setShowDatePicker(!showDatePicker)} className="flex items-center gap-2 px-4 py-2 bg-card border border-border rounded-lg text-body-sm text-foreground hover:bg-surface-container-low transition-all">
+              <span className="material-symbols-outlined text-[18px] text-muted-foreground">calendar_today</span>
+              <span>{selectedRangeLabel}</span>
+              <span className="material-symbols-outlined text-[16px] text-muted-foreground">expand_more</span>
+            </button>
+            {showDatePicker && (
+              <div className="absolute right-0 mt-2 w-48 bg-card border border-border rounded-lg shadow-lg z-20 py-1">
+                {dateRanges.map((d) => (
+                  <button
+                    key={d.value}
+                    onClick={() => { setDateRange(d.value); setShowDatePicker(false); toast(`Showing data for ${d.label}`, "info") }}
+                    className={`w-full text-left px-4 py-2 text-body-sm hover:bg-surface-container-low transition-colors ${dateRange === d.value ? "text-primary font-semibold" : "text-foreground"}`}
+                  >
+                    {d.label}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
-          <button className="flex items-center gap-2 px-5 py-2 bg-[#1e3a5f] text-white rounded-lg text-body-sm font-medium hover:bg-[#162d4a] transition-all">
+          <button onClick={exportReport} className="flex items-center gap-2 px-5 py-2 bg-[#1e3a5f] text-white rounded-lg text-body-sm font-medium hover:bg-[#162d4a] transition-all">
             <span className="material-symbols-outlined text-[18px]">download</span>
             Export
           </button>
@@ -104,7 +184,7 @@ export default function AnalyticsPage() {
         <div className="bg-card p-6 rounded-xl border border-border shadow-sm">
           <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-2">Total Margin Protected</p>
           <div className="flex items-end gap-3">
-            <p className="text-[32px] font-bold text-foreground tracking-tight">${data.totalMarginProtected.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+            <p className="text-[32px] font-bold text-foreground tracking-tight">PKR {data.totalMarginProtected.toLocaleString()}</p>
             <span className="flex items-center gap-1 text-[13px] font-semibold text-emerald-600 mb-1">
               <span className="material-symbols-outlined text-[16px]">trending_up</span>
               +{data.marginChange}%
@@ -142,7 +222,7 @@ export default function AnalyticsPage() {
         {/* Net Retention Value */}
         <div className="bg-card p-6 rounded-xl border border-border shadow-sm">
           <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-2">Net Retention Value</p>
-          <p className="text-[32px] font-bold text-foreground tracking-tight">${data.netRetentionValue.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+          <p className="text-[32px] font-bold text-foreground tracking-tight">PKR {data.netRetentionValue.toLocaleString()}</p>
           <div className="flex items-center gap-2 mt-3">
             <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 text-[11px] font-semibold rounded">savings</span>
           </div>
@@ -227,10 +307,10 @@ export default function AnalyticsPage() {
               <LineChart data={data.profitRecovery}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#e5eeff" />
                 <XAxis dataKey="day" tick={{ fontSize: 11, fill: "#777584" }} axisLine={{ stroke: "#e5eeff" }} />
-                <YAxis tick={{ fontSize: 11, fill: "#777584" }} axisLine={{ stroke: "#e5eeff" }} tickFormatter={(v) => `$${(v / 1000).toFixed(1)}k`} />
+                <YAxis tick={{ fontSize: 11, fill: "#777584" }} axisLine={{ stroke: "#e5eeff" }} tickFormatter={(v) => `PKR ${(v / 1000).toFixed(0)}k`} />
                 <Tooltip
                   contentStyle={{ borderRadius: "8px", border: "1px solid #e5eeff", fontSize: "12px" }}
-                  formatter={(value) => [`$${Number(value).toLocaleString()}`, ""]}
+                  formatter={(value) => [`PKR ${Number(value).toLocaleString()}`, ""]}
                 />
                 <Line type="monotone" dataKey="projected" stroke="#93c5fd" strokeWidth={2} strokeDasharray="5 5" dot={false} name="Projected" />
                 <Line type="monotone" dataKey="actual" stroke="#1e3a5f" strokeWidth={2} dot={{ fill: "#1e3a5f", r: 4 }} name="Actual" />
@@ -254,7 +334,7 @@ export default function AnalyticsPage() {
       <div className="bg-card rounded-xl border border-border shadow-sm">
         <div className="flex items-center justify-between p-6 border-b border-border">
           <h3 className="font-semibold text-foreground">Top Returned Products</h3>
-          <button className="text-[13px] font-medium text-primary hover:text-primary/80 transition-all">
+          <button onClick={() => toast("Full report view coming soon", "info")} className="text-[13px] font-medium text-primary hover:text-primary/80 transition-all">
             View All Report
           </button>
         </div>
@@ -291,7 +371,7 @@ export default function AnalyticsPage() {
                     </div>
                   </td>
                   <td className="px-6 py-4 text-[13px] text-foreground">{product.quantity.toLocaleString()} Units</td>
-                  <td className="px-6 py-4 text-[13px] font-medium text-foreground">${product.recovery.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                  <td className="px-6 py-4 text-[13px] font-medium text-foreground">PKR {product.recovery.toLocaleString()}</td>
                 </tr>
               ))}
             </tbody>

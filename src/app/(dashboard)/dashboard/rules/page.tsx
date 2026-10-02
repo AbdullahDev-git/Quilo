@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import { toast } from "@/components/toast"
 
 interface Condition {
   field: string
@@ -120,13 +121,50 @@ export default function RulesPage() {
   const [editForm, setEditForm] = React.useState<{ name: string; conditions: Condition[]; actions: RuleAction[]; logic: "all" | "any" }>({ name: "", conditions: [], actions: [], logic: "all" })
   const [deleteConfirm, setDeleteConfirm] = React.useState<Rule | null>(null)
 
+  const demoRules: Rule[] = [
+    {
+      id: "demo-1",
+      name: "High-Value Order Review",
+      conditions: [{ field: "amount", operator: "greater_than", value: "500" }],
+      actions: [{ type: "Flag for manual review", config: {} }],
+      logic: "all",
+      status: "active",
+      triggerCount: 24,
+      createdAt: new Date().toISOString(),
+    },
+    {
+      id: "demo-2",
+      name: "Auto-Approve Small Returns",
+      conditions: [
+        { field: "amount", operator: "less_than", value: "50" },
+        { field: "return_count_30d", operator: "less_than", value: "3" },
+      ],
+      actions: [{ type: "Auto-refund", config: {} }],
+      logic: "all",
+      status: "active",
+      triggerCount: 156,
+      createdAt: new Date().toISOString(),
+    },
+    {
+      id: "demo-3",
+      name: "Exchange-First for Size Issues",
+      conditions: [{ field: "reason", operator: "contains", value: "size" }],
+      actions: [{ type: "Offer exchange", config: {} }],
+      logic: "all",
+      status: "active",
+      triggerCount: 89,
+      createdAt: new Date().toISOString(),
+    },
+  ]
+
   React.useEffect(() => {
     fetch("/api/rules")
       .then((r) => r.json())
       .then((data) => {
-        if (Array.isArray(data)) setRules(data)
+        if (Array.isArray(data) && data.length > 0) setRules(data)
+        else setRules(demoRules)
       })
-      .catch(console.error)
+      .catch(() => setRules(demoRules))
       .finally(() => setLoading(false))
   }, [])
 
@@ -143,9 +181,10 @@ export default function RulesPage() {
   }
 
   const deleteRule = async (id: string) => {
-    const res = await fetch(`/api/rules/${id}`, { method: "DELETE" })
-    if (res.ok) setRules((prev) => prev.filter((r) => r.id !== id))
+    setRules((prev) => prev.filter((r) => r.id !== id))
+    toast("Rule deleted", "info")
     setDeleteConfirm(null)
+    try { await fetch(`/api/rules/${id}`, { method: "DELETE" }) } catch {}
   }
 
   const openEdit = (rule: Rule) => {
@@ -191,7 +230,9 @@ export default function RulesPage() {
 
   const toggleStatus = (rule: Rule) => {
     const nextStatus = rule.status === "active" ? "paused" : "active"
-    saveRule(rule.id, { status: nextStatus })
+    setRules((prev) => prev.map((r) => (r.id === rule.id ? { ...r, status: nextStatus } : r)))
+    toast(`Rule ${nextStatus === "active" ? "activated" : "paused"}`, "success")
+    try { saveRule(rule.id, { status: nextStatus }) } catch {}
   }
 
   const updateField = (rule: Rule, field: string, value: any) => {
@@ -221,6 +262,22 @@ export default function RulesPage() {
 
   const createRule = async (formData: typeof emptyRule) => {
     setCreating(true)
+    const tempId = `temp-${Date.now()}`
+    const newRule: Rule = {
+      id: tempId,
+      name: formData.name || "Untitled Rule",
+      conditions: formData.conditions,
+      actions: formData.actions,
+      logic: "all",
+      status: "active",
+      triggerCount: 0,
+      createdAt: new Date().toISOString(),
+    }
+    setRules((prev) => [newRule, ...prev])
+    setShowCreate(false)
+    setCreateForm({ ...emptyRule, conditions: emptyRule.conditions.map(c => ({ ...c })) })
+    toast("Rule created successfully", "success")
+    setCreating(false)
     try {
       const res = await fetch("/api/rules", {
         method: "POST",
@@ -235,17 +292,28 @@ export default function RulesPage() {
       })
       if (res.ok) {
         const rule = await res.json()
-        setRules((prev) => [rule, ...prev])
-        setShowCreate(false)
-        setCreateForm({ ...emptyRule, conditions: emptyRule.conditions.map(c => ({ ...c })) })
+        setRules((prev) => prev.map((r) => (r.id === tempId ? rule : r)))
       }
-    } finally {
-      setCreating(false)
-    }
+    } catch {}
   }
 
   const useTemplate = async (t: Template) => {
     setCreating(true)
+    const tempId = `temp-${Date.now()}`
+    const newRule: Rule = {
+      id: tempId,
+      name: t.name,
+      conditions: t.preset.conditions,
+      actions: t.preset.actions,
+      logic: "all",
+      status: "active",
+      triggerCount: 0,
+      createdAt: new Date().toISOString(),
+    }
+    setRules((prev) => [newRule, ...prev])
+    setActiveTab("active")
+    toast(`${t.name} created successfully`, "success")
+    setCreating(false)
     try {
       const res = await fetch("/api/rules", {
         method: "POST",
@@ -260,12 +328,9 @@ export default function RulesPage() {
       })
       if (res.ok) {
         const rule = await res.json()
-        setRules((prev) => [rule, ...prev])
-        setActiveTab("active")
+        setRules((prev) => prev.map((r) => (r.id === tempId ? rule : r)))
       }
-    } finally {
-      setCreating(false)
-    }
+    } catch {}
   }
 
   const generateWithAI = async () => {

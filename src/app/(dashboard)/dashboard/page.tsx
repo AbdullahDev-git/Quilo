@@ -3,7 +3,9 @@
 "use client"
 
 import * as React from "react"
+import { useRouter } from "next/navigation"
 import { formatTimeAgo, formatCurrency } from "@/lib/utils"
+import { toast } from "@/components/toast"
 
 interface DashboardData {
   stats: {
@@ -43,6 +45,7 @@ const statCards = [
 ]
 
 export default function DashboardPage() {
+  const router = useRouter()
   const [data, setData] = React.useState<DashboardData | null>(null)
   const [loading, setLoading] = React.useState(true)
   const [error, setError] = React.useState<string | null>(null)
@@ -93,7 +96,7 @@ export default function DashboardPage() {
             {flaggedCount} item{flaggedCount !== "1" ? "s" : ""} flagged for fraud review
           </p>
         </div>
-        <button className="px-4 py-1.5 bg-[#752c00] text-white rounded-lg text-[12px] font-medium tracking-[0.05em] hover:bg-[#511c00] transition-colors">
+        <button onClick={() => router.push("/dashboard/approval-queue")} className="px-4 py-1.5 bg-[#752c00] text-white rounded-lg text-[12px] font-medium tracking-[0.05em] hover:bg-[#511c00] transition-colors">
           Review Now
         </button>
       </div>
@@ -181,7 +184,7 @@ export default function DashboardPage() {
                 ))
               )}
             </div>
-            <button className="mt-4 w-full flex items-center justify-center gap-2 px-4 py-2 border border-dashed border-border rounded-lg text-body-sm text-on-surface-variant hover:bg-surface-container-low transition-colors">
+            <button onClick={() => router.push("/dashboard/settings")} className="mt-4 w-full flex items-center justify-center gap-2 px-4 py-2 border border-dashed border-border rounded-lg text-body-sm text-on-surface-variant hover:bg-surface-container-low transition-colors">
               <span className="material-symbols-outlined text-[18px]">add</span>
               Connect Store
             </button>

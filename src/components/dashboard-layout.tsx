@@ -5,6 +5,7 @@ import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
 import { useTheme } from "@/components/theme-provider"
 import { useAuth } from "@/lib/auth-context"
+import { Toaster } from "@/components/toast"
 
 const navItems = [
   { label: "Dashboard", href: "/dashboard", icon: "dashboard" },
@@ -40,6 +41,7 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className={`min-h-screen bg-background flex ${theme === "dark" ? "dark" : ""}`}>
+      <Toaster />
       {mobileOpen && (
         <div className="fixed inset-0 bg-black/50 z-30 md:hidden" onClick={() => setMobileOpen(false)} />
       )}
