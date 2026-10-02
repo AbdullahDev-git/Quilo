@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="48" viewBox="0 0 120 48" fill="none">
+  <!-- White rounded background -->
+  <rect width="48" height="48" rx="10" fill="white"/>
+  
+  <!-- Rocket body -->
+  <path d="M24 8C24 8 17 15 17 23C17 27.5 19.5 31 24 33C28.5 31 31 27.5 31 23C31 15 24 8 24 8Z" fill="#1f108e"/>
+  
+  <!-- Rocket window -->
+  <circle cx="24" cy="21" r="3.5" fill="white"/>
+  
+  <!-- Rocket fins -->
+  <path d="M17 28L13 34L18 30Z" fill="#1f108e" opacity="0.8"/>
+  <path d="M31 28L35 34L30 30Z" fill="#1f108e" opacity="0.8"/>
+  
+  <!-- Flame -->
+  <path d="M21 33L24 40L27 33Z" fill="#f59e0b"/>
+  
+  <!-- Quilo text -->
+  <text x="56" y="30" font-family="system-ui, -apple-system, sans-serif" font-weight="900" font-size="22" fill="#1f108e">Quilo</text>
+</svg>
