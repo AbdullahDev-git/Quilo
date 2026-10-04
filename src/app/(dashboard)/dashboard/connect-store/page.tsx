@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { useRouter } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 
 const platforms = [
   { name: "Shopify", desc: "Sync orders, products, and customers from your Shopify store.", icon: "storefront", iconBg: "bg-primary-fixed", iconColor: "text-primary", popular: true },
@@ -12,18 +12,41 @@ const platforms = [
   { name: "Square", desc: "Connect your Square point-of-sale.", icon: "point_of_sale", iconBg: "bg-[#ffdbcc]", iconColor: "text-[#752c00] dark:text-[#ffdbcc]", popular: false },
 ]
 
+const wooSteps = [
+  { title: "Open your WordPress admin", desc: "Go to your WooCommerce store's WordPress dashboard." },
+  { title: "Navigate to WooCommerce → Settings → Advanced → REST API", desc: "This is where you manage API keys for your store." },
+  { title: "Click \"Add key\"", desc: "A new API key will be generated for Quilo." },
+  { title: "Fill in the details", desc: "Description: Quilo Returns — User: Admin — Permissions: Read/Write." },
+  { title: "Click \"Generate API key\"", desc: "Copy the Consumer Key and Consumer Secret (shown only once)." },
+  { title: "Approve the connection", desc: "You'll be redirected to your store to approve Quilo's access." },
+]
+
 export default function ConnectStorePage() {
   const [selected, setSelected] = React.useState<string | null>(null)
   const [shopDomain, setShopDomain] = React.useState("")
   const [storeUrl, setStoreUrl] = React.useState("")
-  const [apiKey, setApiKey] = React.useState("")
-  const [apiSecret, setApiSecret] = React.useState("")
+  const [consumerKey, setConsumerKey] = React.useState("")
+  const [consumerSecret, setConsumerSecret] = React.useState("")
+  const [showManualWoo, setShowManualWoo] = React.useState(false)
   const [connecting, setConnecting] = React.useState(false)
   const [error, setError] = React.useState("")
   const [success, setSuccess] = React.useState(false)
   const router = useRouter()
+  const searchParams = useSearchParams()
 
-  // Handle Shopify OAuth redirect
+  // Handle OAuth redirect results
+  React.useEffect(() => {
+    const connected = searchParams.get("connected")
+    const err = searchParams.get("error")
+    if (connected === "woocommerce") {
+      setSuccess(true)
+      setTimeout(() => router.push("/dashboard/stores"), 2000)
+    } else if (err) {
+      setError(err === "oauth_failed" ? "WooCommerce connection failed. Please try again." : err)
+    }
+  }, [searchParams, router])
+
+  // Shopify OAuth redirect
   const handleShopifyConnect = async () => {
     if (!shopDomain) {
       setError("Shop domain is required")
@@ -32,7 +55,6 @@ export default function ConnectStorePage() {
     setConnecting(true)
     setError("")
     try {
-      // Normalize shop domain
       let domain = shopDomain.replace(/^https?:\/\//, "").replace(/\/.*$/, "")
       if (!domain.includes(".myshopify.com")) {
         domain = `${domain}.myshopify.com`
@@ -50,9 +72,58 @@ export default function ConnectStorePage() {
     }
   }
 
-  // Handle other platforms (manual entry)
+  // WooCommerce OAuth redirect (primary flow)
+  const handleWooOAuthConnect = async () => {
+    if (!storeUrl) {
+      setError("Store URL is required")
+      return
+    }
+    setConnecting(true)
+    setError("")
+    try {
+      const res = await fetch(`/api/woocommerce/auth-url?storeUrl=${encodeURIComponent(storeUrl)}`)
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.error || "Failed to initiate WooCommerce connection")
+      }
+      const { url } = await res.json()
+      window.location.href = url
+    } catch (err: any) {
+      setError(err.message)
+      setConnecting(false)
+    }
+  }
+
+  // WooCommerce manual key entry (fallback)
+  const handleWooManualConnect = async () => {
+    if (!storeUrl || !consumerKey || !consumerSecret) {
+      setError("Store URL, Consumer Key, and Consumer Secret are required")
+      return
+    }
+    setConnecting(true)
+    setError("")
+    try {
+      const res = await fetch("/api/woocommerce/connect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ storeUrl, consumerKey, consumerSecret }),
+      })
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.error || "Failed to connect store")
+      }
+      setSuccess(true)
+      setTimeout(() => router.push("/dashboard/stores"), 1500)
+    } catch (err: any) {
+      setError(err.message)
+    } finally {
+      setConnecting(false)
+    }
+  }
+
+  // Other platforms (manual entry)
   const handleManualConnect = async () => {
-    if (!storeUrl || !apiKey) {
+    if (!storeUrl || !consumerKey) {
       setError("Store URL and API Key are required")
       return
     }
@@ -65,7 +136,7 @@ export default function ConnectStorePage() {
         body: JSON.stringify({
           name: selected ? `${selected} - ${storeUrl}` : storeUrl,
           domain: storeUrl,
-          accessToken: apiKey,
+          accessToken: consumerKey,
           platform: selected?.toLowerCase(),
         }),
       })
@@ -82,7 +153,12 @@ export default function ConnectStorePage() {
     }
   }
 
-  const handleConnect = selected === "Shopify" ? handleShopifyConnect : handleManualConnect
+  const handleConnect = () => {
+    if (selected === "Shopify") return handleShopifyConnect()
+    if (selected === "WooCommerce" && !showManualWoo) return handleWooOAuthConnect()
+    if (selected === "WooCommerce" && showManualWoo) return handleWooManualConnect()
+    return handleManualConnect()
+  }
 
   return (
     <>
@@ -143,7 +219,9 @@ export default function ConnectStorePage() {
                   <p className="text-body-sm text-muted-foreground">
                     {selected === "Shopify"
                       ? "Enter your Shopify store domain to connect via OAuth."
-                      : "Enter your store credentials to establish a secure connection."}
+                      : selected === "WooCommerce"
+                        ? "Connect via WooCommerce's secure Application Authentication."
+                        : "Enter your store credentials to establish a secure connection."}
                   </p>
                 </div>
               </div>
@@ -155,7 +233,7 @@ export default function ConnectStorePage() {
                 </div>
               ) : (
                 <>
-                  {selected === "Shopify" ? (
+                  {selected === "Shopify" && (
                     <div className="grid gap-4 mb-6">
                       <div>
                         <label className="text-[12px] tracking-[0.05em] font-medium text-on-surface-variant mb-1.5 block">Shopify Store Domain</label>
@@ -168,7 +246,54 @@ export default function ConnectStorePage() {
                         <p className="text-[11px] text-muted-foreground mt-1">Just enter your shop name — we&apos;ll redirect you to Shopify to authorize.</p>
                       </div>
                     </div>
-                  ) : (
+                  )}
+
+                  {selected === "WooCommerce" && !showManualWoo && (
+                    <div className="mb-6">
+                      <div className="grid gap-4 mb-6">
+                        <div>
+                          <label className="text-[12px] tracking-[0.05em] font-medium text-on-surface-variant mb-1.5 block">WooCommerce Store URL</label>
+                          <input
+                            value={storeUrl}
+                            onChange={(e) => setStoreUrl(e.target.value)}
+                            className="w-full px-4 py-2.5 bg-surface-container-low border border-border rounded-lg text-body-md text-foreground focus:outline-none focus:ring-2 focus:ring-[#1f108e]/20 dark:focus:ring-[#818cf8]/30"
+                            placeholder="https://mystore.com"
+                          />
+                          <p className="text-[11px] text-muted-foreground mt-1">Your full store URL including https://</p>
+                        </div>
+                      </div>
+
+                      {/* Step-by-step guide */}
+                      <div className="bg-surface-container-low rounded-lg p-4 mb-4">
+                        <p className="text-[12px] font-semibold text-foreground mb-3 flex items-center gap-1.5">
+                          <span className="material-symbols-outlined text-[16px] text-secondary">list</span>
+                          How to get your API credentials
+                        </p>
+                        <ol className="space-y-2.5">
+                          {wooSteps.map((step, i) => (
+                            <li key={i} className="flex gap-3">
+                              <span className="w-5 h-5 rounded-full bg-secondary/20 text-secondary text-[11px] font-bold flex items-center justify-center shrink-0 mt-0.5">
+                                {i + 1}
+                              </span>
+                              <div>
+                                <p className="text-[13px] font-medium text-foreground leading-snug">{step.title}</p>
+                                <p className="text-[12px] text-muted-foreground leading-snug">{step.desc}</p>
+                              </div>
+                            </li>
+                          ))}
+                        </ol>
+                      </div>
+
+                      <p className="text-[12px] text-muted-foreground mb-4">
+                        Don&apos;t have API keys ready?{" "}
+                        <button onClick={() => setShowManualWoo(true)} className="text-primary font-medium hover:underline">
+                          Enter them manually instead
+                        </button>
+                      </p>
+                    </div>
+                  )}
+
+                  {selected === "WooCommerce" && showManualWoo && (
                     <div className="grid gap-4 sm:grid-cols-2 mb-6">
                       <div className="sm:col-span-2">
                         <label className="text-[12px] tracking-[0.05em] font-medium text-on-surface-variant mb-1.5 block">Store URL</label>
@@ -176,24 +301,63 @@ export default function ConnectStorePage() {
                           value={storeUrl}
                           onChange={(e) => setStoreUrl(e.target.value)}
                           className="w-full px-4 py-2.5 bg-surface-container-low border border-border rounded-lg text-body-md text-foreground focus:outline-none focus:ring-2 focus:ring-[#1f108e]/20 dark:focus:ring-[#818cf8]/30"
-                          placeholder="https://mystore.myshopify.com"
+                          placeholder="https://mystore.com"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[12px] tracking-[0.05em] font-medium text-on-surface-variant mb-1.5 block">Consumer Key</label>
+                        <input
+                          value={consumerKey}
+                          onChange={(e) => setConsumerKey(e.target.value)}
+                          className="w-full px-4 py-2.5 bg-surface-container-low border border-border rounded-lg text-body-md text-foreground focus:outline-none focus:ring-2 focus:ring-[#1f108e]/20 dark:focus:ring-[#818cf8]/30"
+                          placeholder="ck_..."
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[12px] tracking-[0.05em] font-medium text-on-surface-variant mb-1.5 block">Consumer Secret</label>
+                        <input
+                          type="password"
+                          value={consumerSecret}
+                          onChange={(e) => setConsumerSecret(e.target.value)}
+                          className="w-full px-4 py-2.5 bg-surface-container-low border border-border rounded-lg text-body-md text-foreground focus:outline-none focus:ring-2 focus:ring-[#1f108e]/20 dark:focus:ring-[#818cf8]/30"
+                          placeholder="cs_..."
+                        />
+                      </div>
+                      <div className="sm:col-span-2">
+                        <button onClick={() => setShowManualWoo(false)} className="text-[12px] text-primary font-medium hover:underline flex items-center gap-1">
+                          <span className="material-symbols-outlined text-[14px]">arrow_back</span>
+                          Back to guided connection
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {selected !== "Shopify" && selected !== "WooCommerce" && (
+                    <div className="grid gap-4 sm:grid-cols-2 mb-6">
+                      <div className="sm:col-span-2">
+                        <label className="text-[12px] tracking-[0.05em] font-medium text-on-surface-variant mb-1.5 block">Store URL</label>
+                        <input
+                          value={storeUrl}
+                          onChange={(e) => setStoreUrl(e.target.value)}
+                          className="w-full px-4 py-2.5 bg-surface-container-low border border-border rounded-lg text-body-md text-foreground focus:outline-none focus:ring-2 focus:ring-[#1f108e]/20 dark:focus:ring-[#818cf8]/30"
+                          placeholder="https://mystore.com"
                         />
                       </div>
                       <div>
                         <label className="text-[12px] tracking-[0.05em] font-medium text-on-surface-variant mb-1.5 block">API Key</label>
                         <input
-                          value={apiKey}
-                          onChange={(e) => setApiKey(e.target.value)}
+                          value={consumerKey}
+                          onChange={(e) => setConsumerKey(e.target.value)}
                           className="w-full px-4 py-2.5 bg-surface-container-low border border-border rounded-lg text-body-md text-foreground focus:outline-none focus:ring-2 focus:ring-[#1f108e]/20 dark:focus:ring-[#818cf8]/30"
-                          placeholder="shpat_..."
+                          placeholder="API key"
                         />
                       </div>
                       <div>
                         <label className="text-[12px] tracking-[0.05em] font-medium text-on-surface-variant mb-1.5 block">API Secret</label>
                         <input
                           type="password"
-                          value={apiSecret}
-                          onChange={(e) => setApiSecret(e.target.value)}
+                          value={consumerSecret}
+                          onChange={(e) => setConsumerSecret(e.target.value)}
                           className="w-full px-4 py-2.5 bg-surface-container-low border border-border rounded-lg text-body-md text-foreground focus:outline-none focus:ring-2 focus:ring-[#1f108e]/20 dark:focus:ring-[#818cf8]/30"
                           placeholder="******"
                         />
@@ -217,13 +381,15 @@ export default function ConnectStorePage() {
                         ? "Connecting..."
                         : selected === "Shopify"
                           ? "Connect with Shopify"
-                          : "Connect Store"}
+                          : selected === "WooCommerce" && !showManualWoo
+                            ? "Connect with WooCommerce"
+                            : "Connect Store"}
                     </button>
                   </div>
                 </>
               )}
             </div>
-            <button onClick={() => { setSelected(null); setError(""); setShopDomain(""); setStoreUrl(""); setApiKey(""); setApiSecret("") }} className="text-body-sm font-medium text-primary hover:underline flex items-center gap-1 justify-center w-full">
+            <button onClick={() => { setSelected(null); setError(""); setShopDomain(""); setStoreUrl(""); setConsumerKey(""); setConsumerSecret(""); setShowManualWoo(false) }} className="text-body-sm font-medium text-primary hover:underline flex items-center gap-1 justify-center w-full">
               <span className="material-symbols-outlined text-[18px]">arrow_back</span>
               Back to platform selection
             </button>

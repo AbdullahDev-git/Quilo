@@ -6,7 +6,7 @@ import { users } from "../models/schema"
 import { authenticate, generateToken, AuthRequest } from "../middleware/auth"
 import { config } from "../config"
 import { getSessionCookieOptions } from "../config/cookies"
-import { sendEmail } from "../services/email"
+import { addEmailJob } from "../jobs/queue"
 import { eq, and, gt } from "drizzle-orm"
 import { validate, registerSchema, loginSchema, googleAuthSchema } from "../middleware/validate"
 import { generateCsrfToken } from "../middleware/csrf"
@@ -92,7 +92,7 @@ async function sendLoginAlert(
     </div>
   `
 
-  await sendEmail({ to: email, subject, html })
+  await addEmailJob(email, subject, html)
 }
 
 router.post("/register", validate(registerSchema), async (req: Request, res: Response) => {

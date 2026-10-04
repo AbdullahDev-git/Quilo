@@ -1,6 +1,7 @@
 import { Router, Response } from "express"
 import { AuthRequest, authenticate } from "../middleware/auth"
 import { createLemonSqueezyService } from "../services/lemon-squeezy"
+import { getUserPlan, getTeamSeatUsage } from "../services/billing"
 import { config } from "../config"
 import { createContextLogger } from "../config/logger"
 
@@ -8,6 +9,18 @@ const log = createContextLogger({ module: "lemon-squeezy-routes" })
 const router = Router()
 
 router.use(authenticate)
+
+// Get current user's subscription/plan + team seat usage
+router.get("/subscription", async (req: AuthRequest, res: Response) => {
+  try {
+    const plan = await getUserPlan(req.userId!)
+    const seats = await getTeamSeatUsage(req.userId!)
+    return res.json({ ...plan, seats })
+  } catch (error) {
+    log.error({ err: error, userId: req.userId }, "Failed to fetch subscription")
+    return res.status(500).json({ error: "Failed to fetch subscription" })
+  }
+})
 
 router.post("/checkout", async (req: AuthRequest, res: Response) => {
   try {

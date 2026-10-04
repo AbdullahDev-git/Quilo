@@ -5,6 +5,7 @@ import { AuthRequest, authenticate } from "../middleware/auth"
 import { eq, and } from "drizzle-orm"
 import { ShopifyService } from "../services/shopify"
 import { createContextLogger } from "../config/logger"
+import { checkRefundAllowed, recordRefund } from "../services/spend-caps"
 
 const log = createContextLogger({ module: "approvals" })
 const router = Router()
@@ -52,6 +53,22 @@ router.post("/:id/approve", async (req: AuthRequest, res: Response) => {
       return res.status(404).json({ error: "Order not found" })
     }
 
+    const refundAmount = parseFloat(order.totalAmount) || 0
+
+    // Spend cap check — runs on all refund paths including manual approval.
+    // Manual approval from the queue is a human override, so we log the check
+    // result but allow the refund to proceed regardless.
+    let spendCapCheck: { allowed: boolean; remaining?: number; reason?: string } = { allowed: true }
+    if (order.storeId && refundAmount > 0) {
+      spendCapCheck = await checkRefundAllowed(req.userId!, order.storeId, refundAmount)
+      if (!spendCapCheck.allowed) {
+        log.warn(
+          { orderId: id, userId: req.userId, amount: refundAmount, remaining: spendCapCheck.remaining },
+          "Manual approval proceeding despite spend cap (human override)"
+        )
+      }
+    }
+
     // Attempt real Shopify refund if store is connected
     let refundResult: { success: boolean; error?: string; refund?: any } = { success: false, error: "No Shopify connection" }
     if (order.storeId) {
@@ -71,6 +88,11 @@ router.post("/:id/approve", async (req: AuthRequest, res: Response) => {
       }
     }
 
+    // Record refund against spend cap after successful refund
+    if (refundResult.success && order.storeId && refundAmount > 0) {
+      await recordRefund(req.userId!, order.storeId, refundAmount)
+    }
+
     await getDb()
       .update(orders)
       .set({
@@ -82,8 +104,8 @@ router.post("/:id/approve", async (req: AuthRequest, res: Response) => {
 
     const [updated] = await getDb().select().from(orders).where(and(eq(orders.id, id), eq(orders.userId, req.userId!))).limit(1)
 
-    log.info({ orderId: id, userId: req.userId, refundSuccess: refundResult.success }, "Order approved")
-    return res.json({ ...updated, refundResult })
+    log.info({ orderId: id, userId: req.userId, refundSuccess: refundResult.success, spendCapExceeded: !spendCapCheck.allowed }, "Order approved")
+    return res.json({ ...updated, refundResult, spendCapExceeded: !spendCapCheck.allowed })
   } catch (error) {
     log.error({ err: error, orderId: req.params.id }, "Failed to approve order")
     return res.status(500).json({ error: "Failed to approve order" })

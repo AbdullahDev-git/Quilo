@@ -9,6 +9,54 @@ interface WooCommerceConfig {
   consumerSecret: string
 }
 
+// Pending OAuth connections — in-memory with TTL
+// Production: move to Redis/DB for multi-instance deployments
+interface PendingConnection {
+  userId: string
+  storeUrl: string
+  expiresAt: number
+}
+
+const pendingConnections = new Map<string, PendingConnection>()
+const PENDING_TTL = 15 * 60 * 1000 // 15 minutes
+
+// Clean up expired entries periodically
+setInterval(() => {
+  const now = Date.now()
+  for (const [key, conn] of pendingConnections) {
+    if (conn.expiresAt < now) pendingConnections.delete(key)
+  }
+}, 60 * 1000)
+
+export function createPendingConnection(userId: string, storeUrl: string): string {
+  const token = crypto.randomUUID()
+  pendingConnections.set(token, {
+    userId,
+    storeUrl: normalizeStoreUrl(storeUrl),
+    expiresAt: Date.now() + PENDING_TTL,
+  })
+  return token
+}
+
+export function consumePendingConnection(token: string): PendingConnection | null {
+  const conn = pendingConnections.get(token)
+  if (!conn) return null
+  if (conn.expiresAt < Date.now()) {
+    pendingConnections.delete(token)
+    return null
+  }
+  pendingConnections.delete(token) // one-time use
+  return conn
+}
+
+export function normalizeStoreUrl(url: string): string {
+  let normalized = url.trim().replace(/\/+$/, "")
+  if (!normalized.startsWith("http://") && !normalized.startsWith("https://")) {
+    normalized = `https://${normalized}`
+  }
+  return normalized
+}
+
 export class WooCommerceService {
   private baseUrl: string
   private consumerKey: string
@@ -74,6 +122,16 @@ export class WooCommerceService {
       body: JSON.stringify({ note }),
     })
   }
+
+  // Validate credentials by making a test API call
+  async validate(): Promise<boolean> {
+    try {
+      await this.getProducts(1)
+      return true
+    } catch {
+      return false
+    }
+  }
 }
 
 export function createWooCommerceService(
@@ -84,25 +142,36 @@ export function createWooCommerceService(
   return new WooCommerceService({ storeUrl, consumerKey, consumerSecret })
 }
 
-export function getAuthUrl(storeUrl: string, redirectUri: string): string {
-  const url = new URL(`${storeUrl}/wc-auth/v1/authorize`)
-  url.searchParams.set("app_name", "Quilo - Returns Automation")
-  url.searchParams.set("scope", "read_write")
-  url.searchParams.set("user_id", "{{user_id}}")
-  url.searchParams.set("return_url", redirectUri)
-  url.searchParams.set("callback_url", redirectUri)
+export function getAuthUrl(storeUrl: string, callbackUrl: string, returnUrl: string, stateToken: string): string {
+  const normalized = normalizeStoreUrl(storeUrl)
+  const url = new URL(`${normalized}/wc-auth/v1/authorize`)
+  url.searchParams.set("app_name", config.woocommerce.appName)
+  url.searchParams.set("scope", config.woocommerce.scope)
+  url.searchParams.set("user_id", "quilo-app")
+  url.searchParams.set("return_url", `${returnUrl}?connected=woocommerce&state=${stateToken}`)
+  url.searchParams.set("callback_url", `${callbackUrl}?state=${stateToken}`)
   return url.toString()
 }
 
-export async function handleOAuthCallback(
-  storeUrl: string,
-  code: string
-): Promise<{ consumerKey: string; consumerSecret: string }> {
-  log.info({ storeUrl }, "WooCommerce OAuth callback received")
+export interface WooAuthCallbackData {
+  key: string
+  secret: string
+  status: string
+  message: string
+  store_url: string
+  state?: string
+}
 
-  // WooCommerce Application Authentication flow:
-  // The store owner approves on their WordPress site,
-  // and the consumer key/secret are returned via the callback URL.
-  // In production, parse these from the callback query params.
-  throw new Error("WooCommerce OAuth callback not yet implemented")
+export function parseAuthCallback(body: any, query: any): WooAuthCallbackData | null {
+  if (!body || !body.key || !body.secret || !body.store_url) {
+    return null
+  }
+  return {
+    key: String(body.key),
+    secret: String(body.secret),
+    status: String(body.status || ""),
+    message: String(body.message || ""),
+    store_url: normalizeStoreUrl(String(body.store_url)),
+    state: query?.state ? String(query.state) : undefined,
+  }
 }

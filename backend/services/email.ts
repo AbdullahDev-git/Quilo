@@ -1,7 +1,14 @@
 import nodemailer from "nodemailer"
 import { config } from "../config"
+import { createContextLogger } from "../config/logger"
+
+const log = createContextLogger({ module: "email" })
 
 let transporter: nodemailer.Transporter | null = null
+
+export function isEmailConfigured(): boolean {
+  return !!config.smtp.user
+}
 
 function getTransporter(): nodemailer.Transporter {
   if (!transporter) {
@@ -28,7 +35,7 @@ export interface SendEmailOptions {
 export async function sendEmail(options: SendEmailOptions): Promise<boolean> {
   try {
     if (!config.smtp.user) {
-      console.log(`[email disabled] Would send to ${options.to}: ${options.subject}`)
+      log.warn({ to: options.to, subject: options.subject }, "Email skipped (SMTP not configured)")
       return false
     }
 
@@ -40,10 +47,10 @@ export async function sendEmail(options: SendEmailOptions): Promise<boolean> {
       html: options.html,
       text: options.text,
     })
-    console.log(`Email sent to ${options.to}: ${options.subject}`)
+    log.info({ to: options.to, subject: options.subject }, "Email sent")
     return true
   } catch (error) {
-    console.error(`Failed to send email to ${options.to}:`, error)
+    log.error({ err: error, to: options.to }, "Failed to send email")
     return false
   }
 }

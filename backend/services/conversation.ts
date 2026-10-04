@@ -1,8 +1,9 @@
-import { detectIntent, IntentResult, buildStorePrompt, ChatIntent } from "./chatbot"
+import { detectIntent, IntentResult, ChatIntent } from "./chatbot"
 import { getStoreContext, StoreContext } from "./store-context"
 import { ShopifyService } from "./shopify"
+import { RulesEngine } from "./rules-engine"
 import { getDb } from "../config/database"
-import { chatSessions, chatMessages, stores, orders, rules } from "../models/schema"
+import { chatSessions, chatMessages, stores, orders, rules, actionLogs } from "../models/schema"
 import { eq, and, desc } from "drizzle-orm"
 import { createContextLogger } from "../config/logger"
 
@@ -27,7 +28,6 @@ interface ChatResponse {
   nextStep?: string
 }
 
-// Step definitions for return/exchange flow
 const RETURN_FLOW_STEPS = {
   START: "start",
   ASK_ORDER: "ask_order",
@@ -48,7 +48,6 @@ export async function processMessage(
 ): Promise<ChatResponse> {
   const db = getDb()
 
-  // Load or create session
   let session: any = null
   if (conversationId) {
     const [existing] = await db
@@ -73,7 +72,6 @@ export async function processMessage(
     session = newSession
   }
 
-  // Load conversation history
   const history = await db
     .select()
     .from(chatMessages)
@@ -81,16 +79,13 @@ export async function processMessage(
     .orderBy(chatMessages.createdAt)
     .limit(20)
 
-  // Detect intent
   const intentResult = await detectIntent(
     message,
-    history.map(h => ({ role: h.role, content: h.content }))
+    history.map((h: any) => ({ role: h.role, content: h.content }))
   )
 
-  // Load store context
   const storeContext = await getStoreContext(storeId)
 
-  // Handle intent
   const response = await handleIntent(
     intentResult,
     message,
@@ -99,7 +94,6 @@ export async function processMessage(
     storeId
   )
 
-  // Save customer message
   await db.insert(chatMessages).values({
     sessionId: session.id,
     role: "customer",
@@ -108,7 +102,6 @@ export async function processMessage(
     entities: intentResult.entities,
   })
 
-  // Save bot response
   await db.insert(chatMessages).values({
     sessionId: session.id,
     role: "bot",
@@ -116,7 +109,6 @@ export async function processMessage(
     actions: response.actions,
   })
 
-  // Update session
   const sessionContext = (session.context as any) || {}
   sessionContext.currentStep = response.nextStep || sessionContext.currentStep || "idle"
   if (intentResult.entities.orderNumber) {
@@ -159,7 +151,6 @@ async function handleIntent(
   const sessionContext = (session.context as any) || {}
   const currentStep = sessionContext.currentStep || RETURN_FLOW_STEPS.START
 
-  // If we're in the middle of a return/exchange flow, continue it
   if (
     (currentStep === RETURN_FLOW_STEPS.ASK_ORDER ||
       currentStep === RETURN_FLOW_STEPS.ASK_ITEMS ||
@@ -171,7 +162,6 @@ async function handleIntent(
     return handleReturnFlowStep(message, session, sessionContext, storeContext, storeId)
   }
 
-  // Handle new intents
   switch (intent) {
     case "greeting":
       return {
@@ -228,7 +218,6 @@ async function handleIntent(
       }
 
     default:
-      // General question - use AI response if available
       return {
         message: intentResult.suggestedResponse || "I'd be happy to help! Could you please provide more details?",
         intent,
@@ -257,7 +246,6 @@ async function handleOrderLookup(
     }
   }
 
-  // Try to find the order
   const db = getDb()
   let order = null
 
@@ -286,7 +274,6 @@ async function handleOrderLookup(
     order = found
   }
 
-  // Also try Shopify directly
   if (!order && entities.orderNumber && storeContext?.platform === "shopify") {
     const store = await db.select().from(stores).where(eq(stores.id, storeId)).limit(1)
     if (store[0]) {
@@ -340,7 +327,6 @@ function startReturnFlow(
     preferredAction: entities.preferredAction,
   }
 
-  // Update session context synchronously
   session.context = newContext
 
   if (entities.orderNumber) {
@@ -413,7 +399,6 @@ async function handleReturnFlowStep(
       sessionContext.currentStep = RETURN_FLOW_STEPS.ASK_ACTION
 
       if (flow === "exchange") {
-        // For exchange, skip action choice
         sessionContext.currentStep = RETURN_FLOW_STEPS.CONFIRM
         return {
           message: `So to confirm:\n\n📦 **Order:** ${sessionContext.orderNumber}\n👕 **Item:** ${sessionContext.selectedItem}\n📝 **Reason:** ${message}\n🔄 **Action:** Exchange\n\nShall I proceed with the exchange request? (Yes/No)`,
@@ -456,13 +441,13 @@ async function handleReturnFlowStep(
       if (/(yes|haan|confirm|proceed|kar do|bilkul)/.test(lower)) {
         sessionContext.currentStep = RETURN_FLOW_STEPS.PROCESSING
 
-        // Check rules engine
         const actions: ChatResponse["actions"] = []
         const ruleResult = await checkRulesForReturn(sessionContext, storeId, storeContext)
         actions.push(ruleResult)
 
-        // Process based on rule result
-        if (ruleResult.details?.decision === "auto_approve") {
+        const decision = ruleResult.details?.decision
+
+        if (decision === "auto_approve") {
           sessionContext.currentStep = RETURN_FLOW_STEPS.COMPLETE
           return {
             message: `✅ **${flow === "return" ? "Return" : "Exchange"} request approved!**\n\nYour request has been processed automatically. ${flow === "return" ? "You'll receive your refund within 5-7 business days." : "We'll contact you shortly with exchange details."}\n\nIs there anything else I can help you with?`,
@@ -473,7 +458,7 @@ async function handleReturnFlowStep(
           }
         }
 
-        if (ruleResult.details?.decision === "auto_deny") {
+        if (decision === "auto_deny") {
           sessionContext.currentStep = RETURN_FLOW_STEPS.COMPLETE
           return {
             message: `❌ I'm sorry, but this ${flow} request doesn't meet our current policy requirements.\n\nIf you believe this is an error, please contact our support team.\n\nIs there anything else I can help you with?`,
@@ -484,7 +469,24 @@ async function handleReturnFlowStep(
           }
         }
 
-        // Flag for review (default)
+        if (decision === "refund_processed") {
+          sessionContext.currentStep = RETURN_FLOW_STEPS.COMPLETE
+          const emailSent = ruleResult.details?.emailSent === true
+          const isMock = ruleResult.details?.mock === true
+          const emailNote = emailSent
+            ? "A confirmation email has been sent."
+            : isMock
+              ? "Note: This was a mock refund (no live Shopify connection) — no email was sent."
+              : "No email was sent (no customer email on file or email delivery failed)."
+          return {
+            message: `✅ **Refund processed successfully!**\n\nYour refund for order **${sessionContext.orderNumber}** has been processed. You'll receive it within 5-7 business days. ${emailNote}\n\nIs there anything else I can help you with?`,
+            intent: "return_request",
+            sessionId: session.id,
+            actions,
+            nextStep: RETURN_FLOW_STEPS.COMPLETE,
+          }
+        }
+
         sessionContext.currentStep = RETURN_FLOW_STEPS.COMPLETE
         return {
           message: `📝 **${flow === "return" ? "Return" : "Exchange"} request submitted!**\n\nYour request has been sent for review. Our team will process it shortly and notify you via email.\n\n**Request Details:**\n• Order: ${sessionContext.orderNumber}\n• Item: ${sessionContext.selectedItem}\n• Reason: ${sessionContext.returnReason}\n\nIs there anything else I can help you with?`,
@@ -515,21 +517,87 @@ async function handleReturnFlowStep(
   }
 }
 
-async function checkRulesForReturn(
+interface OrderLookupResult {
+  order: any | null
+  shopifyOrder: any | null
+  storeRecord: any | null
+}
+
+async function lookupOrderForReturn(
+  orderNumber: string,
+  storeId: string,
+  storeContext: StoreContext | null
+): Promise<OrderLookupResult> {
+  const db = getDb()
+  const cleanNumber = orderNumber.replace(/^#/, "")
+
+  // Try local DB first
+  const [dbOrder] = await db
+    .select()
+    .from(orders)
+    .where(and(
+      eq(orders.orderId, cleanNumber),
+      eq(orders.storeId, storeId)
+    ))
+    .limit(1)
+
+  const [storeRecord] = await db
+    .select()
+    .from(stores)
+    .where(eq(stores.id, storeId))
+    .limit(1)
+
+  // Try Shopify directly if not in DB
+  let shopifyOrder = null
+  if (!dbOrder && storeRecord?.accessToken && storeRecord?.domain && storeContext?.platform !== "woocommerce") {
+    try {
+      const shopify = new ShopifyService(storeRecord.domain, storeRecord.accessToken)
+      shopifyOrder = await shopify.findByOrderNumber(cleanNumber)
+    } catch (err) {
+      log.warn({ err, orderNumber }, "Shopify order lookup failed")
+    }
+  }
+
+  return { order: dbOrder || null, shopifyOrder, storeRecord: storeRecord || null }
+}
+
+export async function checkRulesForReturn(
   context: any,
   storeId: string,
   storeContext: StoreContext | null
 ): Promise<{ type: string; status: string; details?: any }> {
   try {
     const db = getDb()
+    const orderNumber = context.orderNumber || ""
+    const returnReason = (context.returnReason || "").toLowerCase()
+    const preferredAction = context.preferredAction || "refund"
 
+    // Look up the order to get real amount data
+    const { order, shopifyOrder, storeRecord } = await lookupOrderForReturn(orderNumber, storeId, storeContext)
+
+    let orderAmount = parseFloat(context.orderAmount || "0")
+    let orderCurrency = "PKR"
+    let customerEmail = context.customerEmail || ""
+    let customerId = order?.orderId || shopifyOrder?.id || orderNumber
+
+    if (order) {
+      orderAmount = parseFloat(order.totalAmount) || orderAmount
+      customerEmail = order.customerEmail || customerEmail
+    } else if (shopifyOrder) {
+      orderAmount = parseFloat(shopifyOrder.total_price) || orderAmount
+      orderCurrency = shopifyOrder.currency || orderCurrency
+      customerEmail = shopifyOrder.email || shopifyOrder.customer?.email || customerEmail
+    }
+
+    // Load active rules for this store
     const storeRules = await db
       .select()
       .from(rules)
       .where(and(eq(rules.storeId, storeId), eq(rules.status, "active")))
-      .limit(10)
+      .orderBy(rules.priority)
 
     if (storeRules.length === 0) {
+      await flagOrderForReview(orderNumber, storeId, context, orderAmount, orderCurrency, customerEmail, storeContext, order, shopifyOrder)
       return {
         type: "rule_check",
         status: "no_rules",
@@ -537,56 +605,273 @@ async function checkRulesForReturn(
       }
     }
 
-    // Simple rule matching based on return reason
-    const orderAmount = parseFloat(context.orderAmount || "0")
-    const returnReason = context.returnReason || ""
+    // Build order data for rule evaluation
+    const orderData: Record<string, any> = {
+      orderId: customerId,
+      orderNumber,
+      amount: orderAmount,
+      totalAmount: orderAmount,
+      currency: orderCurrency,
+      customerEmail,
+      customerName: order?.customerName || shopifyOrder?.customer?.first_name || "",
+      returnReason,
+      reason: returnReason,
+      preferredAction,
+      financialStatus: order?.financialStatus || shopifyOrder?.financial_status || "paid",
+      fulfillmentStatus: order?.fulfillmentStatus || shopifyOrder?.fulfillment_status || "unfulfilled",
+      lineItems: order ? (typeof order.lineItems === "string" ? JSON.parse(order.lineItems) : order.lineItems) : (shopifyOrder?.line_items || []),
+    }
 
+    // Evaluate rules to find matching ones
+    const matchingRules: any[] = []
     for (const rule of storeRules) {
       const conditions = rule.conditions as any[]
-      const actions = rule.actions as any[]
-
-      // Check if rule matches
-      const conditionsMet = conditions.every((c: any) => {
-        if (c.field === "reason" || c.field === "returnReason") {
-          return returnReason.toLowerCase().includes(String(c.value).toLowerCase())
+      const conditionResults = conditions.filter((c: any) => c.field && c.operator).map((c: any) => {
+        const actual = orderData[c.field] ?? orderData[c.field === "reason" ? "returnReason" : c.field]
+        const expected = c.value
+        switch (c.operator) {
+          case "equals": return String(actual).toLowerCase() === String(expected).toLowerCase()
+          case "not_equals": return String(actual).toLowerCase() !== String(expected).toLowerCase()
+          case "contains": return String(actual).toLowerCase().includes(String(expected).toLowerCase())
+          case "not_contains": return !String(actual).toLowerCase().includes(String(expected).toLowerCase())
+          case "greater_than": return Number(actual) > Number(expected)
+          case "less_than": return Number(actual) < Number(expected)
+          case "greater_than_or_equal": return Number(actual) >= Number(expected)
+          case "less_than_or_equal": return Number(actual) <= Number(expected)
+          case "is_set": return actual !== null && actual !== undefined && actual !== ""
+          default: return true
         }
-        if (c.field === "order_total" || c.field === "amount") {
-          if (c.operator === "greater_than") return orderAmount > parseFloat(c.value)
-          if (c.operator === "less_than") return orderAmount < parseFloat(c.value)
-        }
-        return true // Default to true if condition not relevant
       })
 
-      if (conditionsMet) {
-        // Find the action
-        const action = actions[0]?.type || "Flag for manual review"
-        let decision = "flag_for_review"
-        if (action.includes("Auto-refund") || action.includes("Instant refund")) {
-          decision = "auto_approve"
-        } else if (action.includes("Auto-deny")) {
-          decision = "auto_deny"
-        }
+      const logic = rule.logic || "all"
+      const matched = conditionResults.length === 0
+        ? true
+        : logic === "all"
+          ? conditionResults.every(Boolean)
+          : conditionResults.some(Boolean)
 
+      if (matched) {
+        matchingRules.push(rule)
+      }
+    }
+
+    if (matchingRules.length === 0) {
+      await flagOrderForReview(orderNumber, storeId, context, orderAmount, orderCurrency, customerEmail, storeContext, order, shopifyOrder)
+      return {
+        type: "rule_check",
+        status: "no_match",
+        details: { decision: "flag_for_review", reason: "No matching rule found" },
+      }
+    }
+
+    // Get store record for RulesEngine
+    let shopifyService: ShopifyService | undefined
+    let storeUserId = storeRecord?.userId || ""
+
+    if (storeRecord?.accessToken && storeRecord?.domain && storeContext?.platform !== "woocommerce") {
+      shopifyService = new ShopifyService(storeRecord.domain, storeRecord.accessToken)
+    }
+
+    // Execute the first matching rule through the real RulesEngine
+    const rule = matchingRules[0]
+    const engine = new RulesEngine(shopifyService, storeUserId, storeId)
+
+    // Check if this is a refund-type action
+    const ruleActions = rule.actions as any[]
+    const isRefundRule = ruleActions.some((a: any) =>
+      a.type?.includes("Auto-refund") || a.type?.includes("Instant refund") || a.type?.toLowerCase().includes("refund")
+    )
+
+    // Check duplicate prevention directly
+    if (isRefundRule) {
+      const existingAction = await db
+        .select()
+        .from(actionLogs)
+        .where(and(
+          eq(actionLogs.orderId, String(customerId)),
+          eq(actionLogs.actionType, "Auto-refund"),
+          eq(actionLogs.status, "success")
+        ))
+        .limit(1)
+
+      if (existingAction.length > 0) {
         return {
           type: "rule_check",
-          status: "matched",
-          details: { decision, ruleName: rule.name, action },
+          status: "duplicate",
+          details: {
+            decision: "flag_for_review",
+            reason: "Duplicate refund already processed for this order",
+            ruleName: rule.name,
+          },
         }
       }
     }
 
+    // Execute through RulesEngine (handles spend caps, high-value threshold, AI confidence)
+    const result = await engine.executeWithAI(
+      {
+        id: rule.id,
+        name: rule.name,
+        description: rule.description || "",
+        conditions: rule.conditions as any[],
+        actions: rule.actions as any[],
+      },
+      orderData
+    )
+
+    // Determine what happened
+    if (result.executed) {
+      const executedAction = ruleActions[0]?.type || "Auto-refund"
+      const isRefundExecuted = executedAction.toLowerCase().includes("refund") || executedAction.includes("Auto-refund") || executedAction.includes("Instant")
+
+      if (isRefundExecuted) {
+        // Email is handled by RulesEngine — only sent after REAL Shopify refund succeeds
+        // result.emailSent tells us whether email was actually dispatched
+        const emailMsg = result.emailSent
+          ? "A confirmation email has been sent."
+          : result.mock
+            ? "Note: This is a mock refund (no live Shopify connection) — no email was sent."
+            : "No email was sent (no customer email available or email failed)."
+
+        return {
+          type: "rule_check",
+          status: "executed",
+          details: {
+            decision: "refund_processed",
+            ruleName: rule.name,
+            action: executedAction,
+            amount: orderAmount,
+            verified: result.verified,
+            mock: result.mock,
+            emailSent: result.emailSent,
+            emailMessage: emailMsg,
+          },
+        }
+      }
+
+      // Non-refund action executed (exchange, flag, etc.)
+      return {
+        type: "rule_check",
+        status: "executed",
+        details: {
+          decision: executedAction.toLowerCase().includes("deny") ? "auto_deny" : "auto_approve",
+          ruleName: rule.name,
+          action: executedAction,
+          emailSent: result.emailSent,
+        },
+      }
+    }
+
+    // Rule engine did not execute — check the reason
+    const reason = result.reason || "Rule execution skipped"
+    let decision: string = "flag_for_review"
+
+    if (reason.includes("Spend cap")) {
+      decision = "flag_for_review"
+    } else if (reason.includes("High-value")) {
+      decision = "flag_for_review"
+    } else if (reason.includes("Low AI confidence")) {
+      decision = "flag_for_review"
+    } else if (reason.includes("Duplicate")) {
+      decision = "flag_for_review"
+    }
+
+    // Flag for review (creates order record for Approval Queue)
+    await flagOrderForReview(orderNumber, storeId, context, orderAmount, orderCurrency, customerEmail, storeContext, order, shopifyOrder)
+
     return {
       type: "rule_check",
-      status: "no_match",
-      details: { decision: "flag_for_review", reason: "No matching rule found" },
+      status: "skipped",
+      details: {
+        decision,
+        reason,
+        ruleName: rule.name,
+      },
     }
   } catch (error) {
     log.error({ err: error }, "Rule check failed")
     return {
       type: "rule_check",
       status: "error",
-      details: { decision: "flag_for_review", reason: "Rule check error" },
+      details: { decision: "flag_for_review", reason: "Rule check error — request sent for manual review" },
     }
+  }
+}
+
+async function flagOrderForReview(
+  orderNumber: string,
+  storeId: string,
+  context: any,
+  orderAmount: number,
+  currency: string,
+  customerEmail: string,
+  storeContext: StoreContext | null,
+  existingOrder: any | null,
+  shopifyOrder: any | null
+): Promise<void> {
+  try {
+    const db = getDb()
+
+    // Get store owner
+    const [storeRecord] = await db.select().from(stores).where(eq(stores.id, storeId)).limit(1)
+    const userId = storeRecord?.userId
+    if (!userId) return
+
+    // If order already exists in DB, update its return status
+    if (existingOrder) {
+      await db
+        .update(orders)
+        .set({
+          returnStatus: "pending",
+          returnReason: context.returnReason || existingOrder.returnReason,
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(orders.id, existingOrder.id))
+      return
+    }
+
+    // Create new order record for the Approval Queue
+    const orderId = crypto.randomUUID()
+    const cleanNumber = orderNumber.replace(/^#/, "")
+
+    // Build line items from context or Shopify
+    let lineItems = context.selectedItem
+      ? [{ id: 1, title: context.selectedItem, quantity: 1, price: String(orderAmount), sku: "" }]
+      : []
+
+    if (shopifyOrder?.line_items && Array.isArray(shopifyOrder.line_items)) {
+      lineItems = shopifyOrder.line_items.map((item: any) => ({
+        id: item.id,
+        title: item.title,
+        quantity: item.quantity,
+        price: item.price,
+        sku: item.sku || "",
+      }))
+    }
+
+    await db.insert(orders).values({
+      id: orderId,
+      userId,
+      storeId,
+      orderId: cleanNumber,
+      orderNumber: orderNumber.startsWith("#") ? orderNumber : `#${orderNumber}`,
+      customerEmail: customerEmail || null,
+      customerName: shopifyOrder?.customer?.first_name ? `${shopifyOrder.customer.first_name} ${shopifyOrder.customer.last_name || ""}`.trim() : null,
+      totalAmount: String(orderAmount),
+      currency: currency || "PKR",
+      status: "pending",
+      financialStatus: shopifyOrder?.financial_status || "paid",
+      fulfillmentStatus: shopifyOrder?.fulfillment_status || "unfulfilled",
+      lineItems: JSON.stringify(lineItems),
+      returnReason: context.returnReason || null,
+      returnStatus: "pending",
+      isFraud: "false",
+      createdAt: new Date().toISOString(),
+    })
+
+    log.info({ orderNumber, storeId, amount: orderAmount }, "Order flagged for review via chat")
+  } catch (error) {
+    log.error({ err: error, orderNumber }, "Failed to flag order for review")
   }
 }
 
@@ -617,7 +902,6 @@ async function handleProductQuestion(entities: any, storeContext: StoreContext |
     }
   }
 
-  // Show sample products
   const sample = storeContext.products.slice(0, 5)
   return {
     message: `I couldn't find that exact product, but here are some items from our store:\n\n${sample.map(p => `• ${p.title} — Rs.${p.price}`).join("\n")}\n\nCould you try a different search term?`,

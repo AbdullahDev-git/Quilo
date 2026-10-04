@@ -227,6 +227,8 @@ export const teamMembers = pgTable("team_members", {
   name: text("name"),
   role: text("role").default("member").notNull(),
   status: text("status").default("pending").notNull(),
+  inviteToken: text("invite_token"),
+  tokenExpiresAt: text("token_expires_at"),
   invitedAt: text("invited_at").$defaultFn(() => new Date().toISOString()).notNull(),
   joinedAt: text("joined_at"),
   createdAt: text("created_at").$defaultFn(() => new Date().toISOString()).notNull(),

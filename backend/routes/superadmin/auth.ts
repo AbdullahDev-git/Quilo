@@ -7,7 +7,7 @@ import { admins, adminSessions, adminAuditLogs } from "../../models/schema"
 import { generateSuperadminToken, verifySuperadminToken } from "../../middleware/superadmin-auth"
 import { config } from "../../config"
 import { getSessionCookieOptions } from "../../config/cookies"
-import { sendEmail } from "../../services/email"
+import { addEmailJob } from "../../jobs/queue"
 import { eq, and, gt } from "drizzle-orm"
 
 const router = Router()
@@ -107,11 +107,11 @@ async function sendSecurityAlert(
     </div>
   `
 
-  await sendEmail({
-    to: config.superadmin.alertEmail,
+  await addEmailJob(
+    config.superadmin.alertEmail,
     subject,
-    html,
-  })
+    html
+  )
 }
 
 // Log admin audit event

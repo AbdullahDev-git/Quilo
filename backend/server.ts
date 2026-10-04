@@ -13,7 +13,7 @@ import rulesRoutes from "./routes/rules"
 import storesRoutes from "./routes/stores"
 import { handleShopifyWebhook, syncOrders } from "./controllers/shopify"
 import { handleLemonSqueezyWebhook } from "./controllers/lemon-squeezy"
-import { startWorkers } from "./jobs/queue"
+import { startWorkers, stopWorkers, getQueueHealth } from "./jobs/queue"
 import ordersRoutes from "./routes/orders"
 import analyticsRoutes from "./routes/analytics"
 import approvalsRoutes from "./routes/approvals"
@@ -40,6 +40,8 @@ import superadminAnalyticsRoutes from "./routes/superadmin/analytics"
 import superadminSupportRoutes from "./routes/superadmin/support"
 import superadminConfigRoutes from "./routes/superadmin/config"
 import shopifyAuthRoutes from "./routes/auth/shopify"
+import woocommerceAuthRoutes from "./routes/auth/woocommerce"
+import portalRoutes from "./routes/portal"
 
 const app = express()
 
@@ -81,6 +83,7 @@ app.use("/api/analytics", apiLimiter, analyticsRoutes)
 app.use("/api/approvals", apiLimiter, approvalsRoutes)
 app.use("/api/customers", apiLimiter, customersRoutes)
 app.use("/api/chat", apiLimiter, chatRoutes)
+app.use("/api/portal", apiLimiter, portalRoutes)
 app.use("/api/webhooks", apiLimiter, webhooksMgmtRoutes)
 app.use("/api/dashboard", apiLimiter, dashboardRoutes)
 app.use("/api/activity", apiLimiter, activityRoutes)
@@ -114,6 +117,9 @@ app.use("/api/superadmin/config", apiLimiter, superadminConfigRoutes)
 // Shopify OAuth routes
 app.use("/api/auth/shopify", shopifyAuthRoutes)
 
+// WooCommerce OAuth callback (public — WC-Auth server-to-server)
+app.use("/api/auth/woocommerce", woocommerceAuthRoutes)
+
 // Webhook handlers (external, no auth needed)
 app.post("/api/webhooks/shopify", handleShopifyWebhook)
 app.post("/api/webhooks/lemon-squeezy", handleLemonSqueezyWebhook)
@@ -122,8 +128,14 @@ app.post("/api/webhooks/lemon-squeezy", handleLemonSqueezyWebhook)
 app.post("/api/stores/:storeId/sync", authenticate, syncOrders)
 
 // Health check
-app.get("/api/health", (_req, res) => {
-  res.json({ status: "ok", timestamp: new Date().toISOString() })
+app.get("/api/health", async (_req, res) => {
+  const queueHealth = await getQueueHealth()
+  res.json({
+    status: "ok",
+    timestamp: new Date().toISOString(),
+    redis: queueHealth.redis,
+    queues: queueHealth.queues,
+  })
 })
 
 // Global error handler
@@ -143,11 +155,26 @@ async function start() {
     logger.warn("Starting without database connection. Some features will be unavailable.")
   }
 
-  startWorkers()
+  // Warn if SMTP is not configured
+  const { isEmailConfigured } = await import("./services/email")
+  if (!isEmailConfigured()) {
+    logger.warn("SMTP not configured — email notifications will be skipped. Set SMTP_USER and SMTP_PASS in .env.")
+  }
+
+  await startWorkers()
 
   app.listen(config.port, () => {
     logger.info({ port: config.port, env: config.nodeEnv, db: dbConnected }, "Quilo API server started")
   })
+
+  // Graceful shutdown
+  const shutdown = async (signal: string) => {
+    logger.info({ signal }, "Shutdown signal received, closing workers...")
+    await stopWorkers()
+    process.exit(0)
+  }
+  process.on("SIGTERM", () => shutdown("SIGTERM"))
+  process.on("SIGINT", () => shutdown("SIGINT"))
 }
 
 start().catch((err) => logger.fatal({ err }, "Failed to start server"))

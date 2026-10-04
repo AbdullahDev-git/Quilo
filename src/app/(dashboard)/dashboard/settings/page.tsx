@@ -31,6 +31,13 @@ interface TeamMember {
   joinedAt: string | null
 }
 
+interface Subscription {
+  plan: string
+  status: string
+  isPaid: boolean
+  seats: { used: number; limit: number; plan: string }
+}
+
 export default function SettingsPage() {
   const { theme, toggleTheme } = useTheme()
   const [tab, setTab] = React.useState("Profile")
@@ -39,6 +46,10 @@ export default function SettingsPage() {
   const [integrations, setIntegrations] = React.useState<Integration[]>([])
   const [spendCaps, setSpendCaps] = React.useState<SpendCap[]>([])
   const [teamMembers, setTeamMembers] = React.useState<TeamMember[]>([])
+  const [subscription, setSubscription] = React.useState<Subscription | null>(null)
+  const [inviteEmail, setInviteEmail] = React.useState("")
+  const [inviteRole, setInviteRole] = React.useState("member")
+  const [inviteMsg, setInviteMsg] = React.useState<{ type: "success" | "error"; text: string } | null>(null)
   const [loading, setLoading] = React.useState<Record<string, boolean>>({})
   const [profile, setProfile] = React.useState({ name: "", email: "", phone: "", timezone: "" })
   const [saving, setSaving] = React.useState<Record<string, boolean>>({})
@@ -88,6 +99,17 @@ export default function SettingsPage() {
     }
   }
 
+  const fetchSubscription = async () => {
+    try {
+      const res = await fetch("/api/billing/subscription")
+      if (res.ok) {
+        setSubscription(await res.json())
+      }
+    } catch (err) {
+      console.error("Failed to fetch subscription:", err)
+    }
+  }
+
   const fetchProfile = async () => {
     try {
       const res = await fetch("/api/users/me")
@@ -105,6 +127,7 @@ export default function SettingsPage() {
     fetchIntegrations()
     fetchSpendCaps()
     fetchTeamMembers()
+    fetchSubscription()
   }, [])
 
   const handleIntegrationConnect = async (type: string) => {
@@ -143,13 +166,35 @@ export default function SettingsPage() {
     }
   }
 
-  const handleInviteMember = async (email: string, role: string) => {
+  const handleInviteMember = async () => {
+    if (!inviteEmail.trim()) {
+      setInviteMsg({ type: "error", text: "Please enter an email address." })
+      return
+    }
     setSaving(prev => ({ ...prev, invite: true }))
+    setInviteMsg(null)
     try {
-      const res = await fetch("/api/team-members", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, role }) })
-      if (res.ok) fetchTeamMembers()
+      const res = await fetch("/api/team-members", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: inviteEmail.trim(), role: inviteRole }),
+      })
+      const data = await res.json()
+      if (res.ok) {
+        setInviteMsg({ type: "success", text: data.emailSent ? "Invitation sent successfully!" : "Member invited (email delivery disabled)." })
+        setInviteEmail("")
+        setInviteRole("member")
+        fetchTeamMembers()
+        fetchSubscription()
+      } else if (data.code === "UPGRADE_REQUIRED") {
+        setInviteMsg({ type: "error", text: "Team members require a paid plan. Please upgrade to continue." })
+      } else if (data.code === "SEAT_LIMIT_REACHED") {
+        setInviteMsg({ type: "error", text: data.error || "Seat limit reached. Please upgrade your plan." })
+      } else {
+        setInviteMsg({ type: "error", text: data.error || "Failed to invite member." })
+      }
     } catch (err) {
-      console.error("Failed to invite member:", err)
+      setInviteMsg({ type: "error", text: "Network error. Please try again." })
     } finally {
       setSaving(prev => ({ ...prev, invite: false }))
     }
@@ -435,19 +480,74 @@ export default function SettingsPage() {
                   <p className="text-body-sm text-muted-foreground">Manage who has access to your Quilo workspace.</p>
                 </div>
               </div>
-              <button
-                onClick={() => {
-                  const email = prompt("Enter email to invite:")
-                  const role = prompt("Enter role (admin/member/viewer):", "member")
-                  if (email && role) handleInviteMember(email, role)
-                }}
-                disabled={saving.invite}
-                className="flex items-center gap-1 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-body-sm font-bold shadow-sm hover:opacity-90 transition-all disabled:opacity-50"
-              >
-                <span className="material-symbols-outlined text-[18px]">add</span>
-                Invite
-              </button>
+              {subscription?.isPaid && (
+                <div className="text-right">
+                  <p className="text-[12px] font-bold text-foreground">{subscription.seats.used}/{subscription.seats.limit} seats</p>
+                  <p className="text-[11px] text-muted-foreground capitalize">{subscription.plan} plan</p>
+                </div>
+              )}
             </div>
+
+            {/* Plan Gate: Free plan → Upgrade CTA */}
+            {subscription && !subscription.isPaid && (
+              <div className="mb-6 p-5 rounded-xl border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30">
+                <div className="flex items-start gap-3">
+                  <span className="material-symbols-outlined text-amber-600 dark:text-amber-400 text-[22px] mt-0.5">workspace_premium</span>
+                  <div>
+                    <p className="font-semibold text-amber-800 dark:text-amber-200 text-body-md">Team members require a paid plan</p>
+                    <p className="text-body-sm text-amber-700 dark:text-amber-300 mt-1">
+                      Upgrade to Starter or Pro to invite teammates and share your workspace.
+                    </p>
+                    <a
+                      href="/dashboard/billing"
+                      className="inline-flex items-center gap-1 mt-3 px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-[12px] font-bold transition-colors"
+                    >
+                      <span className="material-symbols-outlined text-[16px]">upgrade</span>
+                      Upgrade Plan
+                    </a>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Invite Form: visible only on paid plan */}
+            {subscription?.isPaid && (
+              <div className="mb-6 p-4 rounded-xl bg-surface-container-low border border-border">
+                <p className="text-[12px] font-bold text-foreground mb-3">Invite a team member</p>
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <input
+                    type="email"
+                    value={inviteEmail}
+                    onChange={e => setInviteEmail(e.target.value)}
+                    placeholder="teammate@company.com"
+                    className="flex-1 px-3 py-2 bg-card border border-border rounded-lg text-body-sm text-foreground focus:outline-none focus:ring-2 focus:ring-[#1f108e]/20"
+                  />
+                  <select
+                    value={inviteRole}
+                    onChange={e => setInviteRole(e.target.value)}
+                    className="px-3 py-2 bg-card border border-border rounded-lg text-body-sm text-foreground outline-none"
+                  >
+                    <option value="admin">Admin</option>
+                    <option value="manager">Manager</option>
+                    <option value="member">Member</option>
+                  </select>
+                  <button
+                    onClick={handleInviteMember}
+                    disabled={saving.invite}
+                    className="px-4 py-2 bg-primary text-primary-foreground rounded-lg text-[12px] font-bold hover:opacity-90 transition-all disabled:opacity-50"
+                  >
+                    {saving.invite ? "Sending..." : "Send Invite"}
+                  </button>
+                </div>
+                {inviteMsg && (
+                  <p className={`text-body-sm mt-2 ${inviteMsg.type === "success" ? "text-green-600 dark:text-green-400" : "text-destructive"}`}>
+                    {inviteMsg.text}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* Members List */}
             {teamMembers.length === 0 && loading.teamMembers ? (
               <div className="flex items-center justify-center py-20">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
@@ -456,7 +556,9 @@ export default function SettingsPage() {
               <div className="text-center py-16 text-muted-foreground">
                 <span className="material-symbols-outlined text-[48px]">group</span>
                 <p className="text-body-md mt-2">No team members yet</p>
-                <p className="text-body-sm mt-1">Invite your first team member above</p>
+                <p className="text-body-sm mt-1">
+                  {subscription?.isPaid ? "Invite your first team member above" : "Upgrade your plan to add team members"}
+                </p>
               </div>
             ) : (
               <div className="space-y-3">
@@ -468,6 +570,9 @@ export default function SettingsPage() {
                         <p className="font-medium text-foreground text-body-md">{m.name || "Pending"}</p>
                         <p className="text-body-sm text-muted-foreground">{m.email}</p>
                       </div>
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${m.status === "active" ? "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400" : "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400"}`}>
+                        {m.status}
+                      </span>
                     </div>
                     <div className="flex items-center gap-3">
                       <select
@@ -476,10 +581,9 @@ export default function SettingsPage() {
                         disabled={saving[m.id]}
                         className="text-[12px] bg-surface-container-low border border-border rounded-lg px-3 py-1.5 outline-none text-foreground"
                       >
-                        <option value="owner">Owner</option>
                         <option value="admin">Admin</option>
+                        <option value="manager">Manager</option>
                         <option value="member">Member</option>
-                        <option value="viewer">Viewer</option>
                       </select>
                       <button
                         onClick={() => handleRemoveMember(m.id)}

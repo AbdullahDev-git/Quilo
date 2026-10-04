@@ -9,7 +9,7 @@
     "build": "next build",
     "start": "next start",
     "server": "tsx backend/server.ts",
-    "worker": "tsx backend/jobs/queue.ts",
+    "worker": "RUN_WORKER=true tsx backend/jobs/queue.ts",
     "lint": "eslint",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",

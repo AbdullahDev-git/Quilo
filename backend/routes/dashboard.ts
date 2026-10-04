@@ -4,6 +4,7 @@ import { orders, rules, stores, auditLogs, webhooks } from "../models/schema"
 import { AuthRequest, authenticate } from "../middleware/auth"
 import { eq, desc, and, sql } from "drizzle-orm"
 import { createContextLogger } from "../config/logger"
+import { config } from "../config"
 
 const log = createContextLogger({ module: "dashboard" })
 const router = Router()
@@ -31,7 +32,7 @@ router.get("/", async (req: AuthRequest, res: Response) => {
       .filter(o => o.returnStatus === "auto_approved" || o.status === "refunded")
       .reduce((sum, o) => sum + parseFloat(o.totalAmount || "0"), 0)
 
-    const hoursSaved = refundsProcessed * 0.15
+    const hoursSaved = refundsProcessed * (config.dashboard.minutesSavedPerRefund / 60)
 
     const activeRules = userRules.filter(r => r.status === "active").length
     const totalTriggers = userRules.reduce((sum, r) => sum + (r.triggerCount || 0), 0)
@@ -49,14 +50,14 @@ router.get("/", async (req: AuthRequest, res: Response) => {
 
     const quickStats = [
       { label: "Rules Active", value: String(activeRules) },
-      { label: "Webhooks", value: String(userWebhooks.length) },
-      { label: "API Calls Today", value: "0" },
+      { label: "Rules Triggered", value: String(totalTriggers) },
+      { label: "Connected Stores", value: String(activeStores) },
       { label: "Errors", value: String(errorStores), highlight: errorStores > 0 },
     ]
 
     return res.json({
       stats: {
-        refundsProcessed: formatCurrency(moneySaved),
+        refundsProcessed: String(refundsProcessed),
         moneySaved: formatCurrency(moneySaved),
         hoursSaved: `${Math.round(hoursSaved)}h`,
         pendingApprovals: String(pendingApprovals),

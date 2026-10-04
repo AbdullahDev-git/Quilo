@@ -10,7 +10,6 @@ export const SHOPIFY_SCOPES = [
   "read_fulfillments",
   "write_fulfillments",
   "read_locales",
-  "read_locales",
   "read_returns",
   "write_returns",
 ]

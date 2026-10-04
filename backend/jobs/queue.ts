@@ -2,8 +2,8 @@ import { Queue, Worker, Job } from "bullmq"
 import IORedis from "ioredis"
 import { config } from "../config"
 import { getDb } from "../config/database"
-import { rules, orders, stores, users, webhooks } from "../models/schema"
-import { eq, and } from "drizzle-orm"
+import { rules, stores } from "../models/schema"
+import { eq } from "drizzle-orm"
 import { RulesEngine } from "../services/rules-engine"
 import { ShopifyService } from "../services/shopify"
 import { sendEmail } from "../services/email"
@@ -13,31 +13,87 @@ const log = createContextLogger({ module: "queue" })
 
 let connection: IORedis | null = null
 let redisAvailable = false
+let connecting = false
+const workers: Worker[] = []
+
+function createConnection(): IORedis | null {
+  if (!config.redis.url) return null
+
+  const conn = new IORedis(config.redis.url, {
+    maxRetriesPerRequest: null,
+    enableOfflineQueue: false,
+    retryStrategy: (times: number) => {
+      if (times > 10) return null
+      return Math.min(times * 500, 5000)
+    },
+    connectTimeout: 5000,
+  })
+
+  conn.on("connect", () => {
+    redisAvailable = true
+    log.info("Redis connected")
+  })
+  conn.on("ready", () => {
+    redisAvailable = true
+  })
+  conn.on("error", (err) => {
+    if (redisAvailable) {
+      log.warn({ err: err.message }, "Redis connection error")
+    }
+    redisAvailable = false
+  })
+  conn.on("close", () => {
+    redisAvailable = false
+  })
+  conn.on("reconnecting", () => {
+    log.info("Redis reconnecting...")
+  })
+
+  return conn
+}
+
+export async function initRedis(): Promise<boolean> {
+  if (connection) return redisAvailable
+  if (connecting) return false
+  connecting = true
+
+  try {
+    connection = createConnection()
+    if (!connection) {
+      connecting = false
+      return false
+    }
+
+    // Wait for connection with timeout
+    await new Promise<void>((resolve) => {
+      const timeout = setTimeout(() => resolve(), 5000)
+      connection!.once("ready", () => {
+        clearTimeout(timeout)
+        resolve()
+      })
+      connection!.once("error", () => {
+        clearTimeout(timeout)
+        resolve()
+      })
+    })
+
+    connecting = false
+    return redisAvailable
+  } catch {
+    connecting = false
+    redisAvailable = false
+    return false
+  }
+}
 
 function getConnection(): IORedis | null {
   if (!config.redis.url) return null
-  if (!redisAvailable && connection) return null
-
-  if (!connection) {
-    try {
-      connection = new IORedis(config.redis.url, {
-        maxRetriesPerRequest: null,
-        enableOfflineQueue: false,
-        retryStrategy: () => null,
-        lazyConnect: true,
-        connectTimeout: 3000,
-        enableReadyCheck: false,
-      })
-
-      connection.on("connect", () => { redisAvailable = true })
-      connection.on("error", () => { redisAvailable = false })
-    } catch {
-      return null
-    }
-  }
-
-  if (!redisAvailable) return null
+  if (!redisAvailable || !connection) return null
   return connection
+}
+
+export function isRedisAvailable(): boolean {
+  return redisAvailable
 }
 
 let _ruleEvaluationQueue: Queue | null = null
@@ -80,28 +136,69 @@ export function getEmailQueue(): Queue | null {
 export async function addRuleEvaluation(ruleId: string, eventData: Record<string, any>) {
   const q = getRuleEvaluationQueue()
   if (!q) {
-    console.log(`[queue disabled] Would evaluate rule ${ruleId}`)
-    return
+    log.warn({ ruleId }, "[queue disabled] Rule evaluation would be queued")
+    return null
   }
   return q.add("evaluate", { ruleId, eventData })
 }
 
-export async function addWebhookDelivery(url: string, payload: Record<string, any>) {
+export async function addWebhookDelivery(url: string, payload: Record<string, any>): Promise<boolean> {
   const q = getWebhookDeliveryQueue()
   if (!q) {
-    console.log(`[queue disabled] Would deliver webhook to ${url}`)
-    return
+    // Inline fallback
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+      return response.ok
+    } catch (err) {
+      log.error({ err, url }, "Webhook delivery failed (inline fallback)")
+      return false
+    }
   }
-  return q.add("deliver", { url, payload })
+  try {
+    await q.add("deliver", { url, payload })
+    return true
+  } catch (err) {
+    log.error({ err, url }, "Failed to enqueue webhook delivery")
+    // Inline fallback
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+      return response.ok
+    } catch {
+      return false
+    }
+  }
 }
 
-export async function addEmailJob(to: string, subject: string, html: string) {
+export async function addEmailJob(to: string, subject: string, html: string): Promise<boolean> {
   const q = getEmailQueue()
   if (!q) {
-    console.log(`[queue disabled] Would send email to ${to}`)
-    return
+    // Inline fallback — send directly
+    try {
+      return await sendEmail({ to, subject, html })
+    } catch (err) {
+      log.error({ err, to }, "Email send failed (inline fallback)")
+      return false
+    }
   }
-  return q.add("send", { to, subject, html })
+  try {
+    await q.add("send", { to, subject, html })
+    return true
+  } catch (err) {
+    log.error({ err, to }, "Failed to enqueue email, falling back to inline")
+    try {
+      return await sendEmail({ to, subject, html })
+    } catch {
+      return false
+    }
+  }
 }
 
 async function evaluateRuleJob(ruleId: string, eventData: Record<string, any>) {
@@ -139,6 +236,7 @@ async function evaluateRuleJob(ruleId: string, eventData: Record<string, any>) {
 
       await engine.executeWithAI(
         {
+          id: rule.id,
           name: rule.name,
           description: rule.description || "",
           conditions: rule.conditions as any[],
@@ -170,14 +268,17 @@ async function sendEmailJob(to: string, subject: string, html: string) {
   await sendEmail({ to, subject, html })
 }
 
-export function startWorkers(): void {
-  const conn = getConnection()
-  if (!conn) {
-    console.log("BullMQ workers not started (Redis unavailable)")
+export async function startWorkers(): Promise<void> {
+  const connected = await initRedis()
+  if (!connected) {
+    log.warn("BullMQ workers not started (Redis unavailable) — inline fallbacks will be used")
     return
   }
 
-  new Worker(
+  const conn = getConnection()
+  if (!conn) return
+
+  const ruleWorker = new Worker(
     "rule-evaluation",
     async (job: Job) => {
       const { ruleId, eventData } = job.data
@@ -185,12 +286,12 @@ export function startWorkers(): void {
     },
     { connection: conn, concurrency: 5 }
   ).on("completed", (job) => {
-    console.log(`Rule evaluation job ${job.id} completed`)
+    log.debug({ jobId: job.id }, "Rule evaluation job completed")
   }).on("failed", (job, err) => {
-    console.error(`Rule evaluation job ${job?.id} failed:`, err)
+    log.error({ jobId: job?.id, err }, "Rule evaluation job failed")
   })
 
-  new Worker(
+  const webhookWorker = new Worker(
     "webhook-delivery",
     async (job: Job) => {
       const { url, payload } = job.data
@@ -198,12 +299,12 @@ export function startWorkers(): void {
     },
     { connection: conn, concurrency: 10 }
   ).on("completed", (job) => {
-    console.log(`Webhook delivery job ${job.id} completed`)
+    log.debug({ jobId: job.id }, "Webhook delivery job completed")
   }).on("failed", (job, err) => {
-    console.error(`Webhook delivery job ${job?.id} failed:`, err)
+    log.error({ jobId: job?.id, err }, "Webhook delivery job failed")
   })
 
-  new Worker(
+  const emailWorker = new Worker(
     "email",
     async (job: Job) => {
       const { to, subject, html } = job.data
@@ -211,10 +312,69 @@ export function startWorkers(): void {
     },
     { connection: conn, concurrency: 3 }
   ).on("completed", (job) => {
-    console.log(`Email job ${job.id} completed`)
+    log.debug({ jobId: job.id }, "Email job completed")
   }).on("failed", (job, err) => {
-    console.error(`Email job ${job?.id} failed:`, err)
+    log.error({ jobId: job?.id, err }, "Email job failed")
   })
 
-  console.log("BullMQ workers started")
+  workers.push(ruleWorker, webhookWorker, emailWorker)
+  log.info("BullMQ workers started (rule-evaluation, webhook-delivery, email)")
+}
+
+export async function stopWorkers(): Promise<void> {
+  log.info("Stopping BullMQ workers...")
+  try {
+    await Promise.all(workers.map((w) => w.close().catch(() => {})))
+  } catch {
+    // Ignore worker close errors
+  }
+  workers.length = 0
+  if (connection && redisAvailable) {
+    try {
+      await connection.quit()
+    } catch {
+      try { connection.disconnect() } catch { /* ignore */ }
+    }
+    connection = null
+  } else if (connection) {
+    try { connection.disconnect() } catch { /* ignore */ }
+    connection = null
+  }
+  redisAvailable = false
+  log.info("BullMQ workers stopped")
+}
+
+export async function getQueueHealth(): Promise<{ redis: boolean; queues: Record<string, number> }> {
+  const queues: Record<string, number> = {}
+  const ruleQ = getRuleEvaluationQueue()
+  const webhookQ = getWebhookDeliveryQueue()
+  const emailQ = getEmailQueue()
+
+  if (ruleQ) queues["rule-evaluation"] = await ruleQ.getWaiting().then((j) => j.length).catch(() => 0)
+  if (webhookQ) queues["webhook-delivery"] = await webhookQ.getWaiting().then((j) => j.length).catch(() => 0)
+  if (emailQ) queues["email"] = await emailQ.getWaiting().then((j) => j.length).catch(() => 0)
+
+  return { redis: redisAvailable, queues }
+}
+
+// Standalone worker mode: run this file directly or set RUN_WORKER=true
+const isMainModule = require.main === module || process.env.RUN_WORKER === "true"
+if (isMainModule) {
+  async function runWorker() {
+    log.info("Starting standalone BullMQ worker...")
+    await startWorkers()
+    log.info("Worker running. Press Ctrl+C to stop.")
+
+    const shutdown = async () => {
+      log.info("Shutdown signal received")
+      await stopWorkers()
+      process.exit(0)
+    }
+    process.on("SIGTERM", shutdown)
+    process.on("SIGINT", shutdown)
+  }
+  runWorker().catch((err) => {
+    log.fatal({ err }, "Worker failed to start")
+    process.exit(1)
+  })
 }

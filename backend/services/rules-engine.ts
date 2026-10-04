@@ -2,10 +2,12 @@ import { ShopifyService } from "./shopify"
 import { GoogleGenAI } from "@google/genai"
 import { config } from "../config"
 import { createContextLogger } from "../config/logger"
-import { sendEmail, buildOrderNotificationEmail } from "./email"
+import { buildOrderNotificationEmail } from "./email"
+import { addEmailJob, addWebhookDelivery } from "../jobs/queue"
 import { getDb } from "../config/database"
 import { actionLogs } from "../models/schema"
 import { eq, and } from "drizzle-orm"
+import { checkRefundAllowed, recordRefund } from "./spend-caps"
 
 const log = createContextLogger({ module: "rules-engine" })
 
@@ -34,6 +36,13 @@ interface AIDecision {
   confidence: number
   reasoning: string
   adjustments?: Record<string, any>
+}
+
+export interface ActionResult {
+  success: boolean
+  verified: boolean
+  mock: boolean
+  emailSent: boolean
 }
 
 const HIGH_VALUE_THRESHOLD = 5000 // Rs. 5,000
@@ -223,7 +232,7 @@ Return ONLY valid JSON:
 
     try {
       const response = await client.models.generateContent({
-        model: "gemini-2.0-flash",
+        model: "gemini-3.8-flash",
         config: {
           systemInstruction: systemPrompt,
           responseMimeType: "application/json",
@@ -261,7 +270,7 @@ Return ONLY valid JSON:
   async executeWithAI(
     rule: { id?: string; name: string; description: string; conditions: Condition[]; actions: RuleAction[] },
     orderData: Record<string, any>
-  ): Promise<{ executed: boolean; reason?: string }> {
+  ): Promise<{ executed: boolean; reason?: string; verified?: boolean; mock?: boolean; emailSent?: boolean }> {
     const orderId = String(orderData.orderId || orderData.id || "")
     const orderAmount = Number(orderData.amount || orderData.totalAmount || 0)
 
@@ -274,6 +283,18 @@ Return ONLY valid JSON:
       const flagAction: RuleAction = { type: "Flag for manual review", config: { reason: `High-value refund (Rs.${orderAmount}) requires approval` } }
       await this.executeAction(flagAction, orderData, rule.id, rule.name)
       return { executed: false, reason: "High-value threshold triggered" }
+    }
+
+    // Step 3b: Spend cap check — shared central check for all refund paths
+    if (isRefundAction && this.userId && this.storeId) {
+      const capCheck = await checkRefundAllowed(this.userId, this.storeId, orderAmount)
+      if (!capCheck.allowed) {
+        log.info({ orderId, amount: orderAmount, remaining: capCheck.remaining }, "Spend cap would be exceeded, flagging for review")
+        await this.logAction(orderId, rule.id, rule.name, "Auto-refund", "skipped", false, null, capCheck.reason || "Spend cap exceeded")
+        const flagAction: RuleAction = { type: "Flag for manual review", config: { reason: capCheck.reason || "Spend cap exceeded — requires approval" } }
+        await this.executeAction(flagAction, orderData, rule.id, rule.name)
+        return { executed: false, reason: "Spend cap exceeded" }
+      }
     }
 
     // Step 6: Duplicate prevention
@@ -312,7 +333,7 @@ Return ONLY valid JSON:
     }
 
     const result = await this.executeAction(action, orderData, rule.id, rule.name)
-    return { executed: result }
+    return { executed: result.success, verified: result.verified, mock: result.mock, emailSent: result.emailSent }
   }
 
   // Step 5 + 6: Execute action with verification and logging
@@ -321,7 +342,7 @@ Return ONLY valid JSON:
     data: Record<string, any>,
     ruleId?: string,
     ruleName?: string
-  ): Promise<boolean> {
+  ): Promise<ActionResult> {
     const orderId = data.orderId || data.id
     const customerEmail = data.customerEmail || data.email
 
@@ -331,6 +352,7 @@ Return ONLY valid JSON:
         case "Instant refund": {
           if (this.shopify && orderId) {
             const refundNote = action.config.note || "Auto-refund processed by Quilo"
+            const refundAmount = Number(data.amount || data.totalAmount || 0)
             const refundResult = await this.shopify.refundOrder(Number(orderId), data.amount, refundNote)
 
             if (refundResult.success) {
@@ -338,27 +360,40 @@ Return ONLY valid JSON:
               const verifyResult = await this.shopify.verifyRefund(Number(orderId))
               await this.shopify.addOrderTags(Number(orderId), ["auto_refund", "quilo_processed"])
 
+              // Record refund against spend cap
+              if (this.userId && this.storeId && refundAmount > 0) {
+                await recordRefund(this.userId, this.storeId, refundAmount)
+              }
+
+              // Send email ONLY after real Shopify refund succeeded
+              let emailSent = false
               if (customerEmail) {
                 const emailContent = buildOrderNotificationEmail({
                   orderId: String(orderId),
                   action: "Refund Processed",
                   details: `Your refund of Rs.${data.amount || "full amount"} has been processed. You will receive it within 5-10 business days.`,
                 })
-                await sendEmail({ to: customerEmail, subject: emailContent.subject, html: emailContent.html })
+                emailSent = await addEmailJob(customerEmail, emailContent.subject, emailContent.html)
               }
 
               await this.logAction(String(orderId), ruleId, ruleName, action.type, "success", verifyResult.verified, verifyResult)
-              log.info({ orderId, amount: data.amount, verified: verifyResult.verified }, "Auto-refund processed and verified")
-              return true
+              log.info({ orderId, amount: data.amount, verified: verifyResult.verified, emailSent }, "Auto-refund processed and verified")
+              return { success: true, verified: verifyResult.verified, mock: false, emailSent }
             } else {
               await this.logAction(String(orderId), ruleId, ruleName, action.type, "failed", false, null, refundResult.error)
               log.error({ orderId, error: refundResult.error }, "Auto-refund failed")
-              return false
+              return { success: false, verified: false, mock: false, emailSent: false }
             }
           } else {
             log.info({ orderId }, "[mock] Auto-refund processed (no Shopify connection)")
+            // Record mock refund against spend cap
+            const mockAmount = Number(data.amount || data.totalAmount || 0)
+            if (this.userId && this.storeId && mockAmount > 0) {
+              await recordRefund(this.userId, this.storeId, mockAmount)
+            }
             await this.logAction(String(orderId), ruleId, ruleName, action.type, "success", false, null, "Mock mode - no Shopify")
-            return true
+            // NO email in mock mode
+            return { success: true, verified: false, mock: true, emailSent: false }
           }
         }
 
@@ -367,20 +402,21 @@ Return ONLY valid JSON:
             const discountPct = action.config.discountPercent || 10
             const tagResult = await this.shopify.addOrderTags(Number(orderId), ["exchange_offered", `discount_${discountPct}`, "quilo_processed"])
             await this.shopify.addOrderNote(Number(orderId), `Exchange offered: ${discountPct}% discount for return`)
+            let emailSent = false
             if (customerEmail) {
               const emailContent = buildOrderNotificationEmail({
                 orderId: String(orderId),
                 action: "Exchange Offered",
                 details: `We'd like to offer you a ${discountPct}% discount as store credit instead of a refund. Contact us to accept this offer.`,
               })
-              await sendEmail({ to: customerEmail, subject: emailContent.subject, html: emailContent.html })
+              emailSent = await addEmailJob(customerEmail, emailContent.subject, emailContent.html)
             }
             await this.logAction(String(orderId), ruleId, ruleName, action.type, "success", tagResult.success, tagResult)
             log.info({ orderId, discountPct }, "Exchange offered successfully")
-            return true
+            return { success: true, verified: tagResult.success, mock: false, emailSent }
           } else {
             log.info({ orderId }, "[mock] Exchange offered (no Shopify connection)")
-            return true
+            return { success: true, verified: false, mock: true, emailSent: false }
           }
         }
 
@@ -390,10 +426,10 @@ Return ONLY valid JSON:
             await this.shopify.addOrderNote(Number(orderId), "Flagged by Quilo for manual review — requires human attention")
             await this.logAction(String(orderId), ruleId, ruleName, action.type, "success", tagResult.success, tagResult)
             log.info({ orderId }, "Order flagged for manual review")
-            return true
+            return { success: true, verified: tagResult.success, mock: false, emailSent: false }
           } else {
             log.info({ orderId }, "[mock] Order flagged for review (no Shopify connection)")
-            return true
+            return { success: true, verified: false, mock: true, emailSent: false }
           }
         }
 
@@ -402,20 +438,21 @@ Return ONLY valid JSON:
             const denyReason = action.config.reason || "Return does not meet policy requirements"
             const tagResult = await this.shopify.addOrderTags(Number(orderId), ["return_denied", "quilo_denied"])
             await this.shopify.addOrderNote(Number(orderId), `Return denied: ${denyReason}`)
+            let emailSent = false
             if (customerEmail) {
               const emailContent = buildOrderNotificationEmail({
                 orderId: String(orderId),
                 action: "Return Denied",
                 details: `Your return request has been denied. Reason: ${denyReason}. If you believe this is an error, please contact support.`,
               })
-              await sendEmail({ to: customerEmail, subject: emailContent.subject, html: emailContent.html })
+              emailSent = await addEmailJob(customerEmail, emailContent.subject, emailContent.html)
             }
             await this.logAction(String(orderId), ruleId, ruleName, action.type, "success", tagResult.success, tagResult)
             log.info({ orderId, reason: denyReason }, "Return denied successfully")
-            return true
+            return { success: true, verified: tagResult.success, mock: false, emailSent }
           } else {
             log.info({ orderId }, "[mock] Return denied (no Shopify connection)")
-            return true
+            return { success: true, verified: false, mock: true, emailSent: false }
           }
         }
 
@@ -428,13 +465,13 @@ Return ONLY valid JSON:
               action: subject,
               details: body,
             })
-            await sendEmail({ to: customerEmail, subject: emailContent.subject, html: emailContent.html })
+            const emailSent = await addEmailJob(customerEmail, emailContent.subject, emailContent.html)
             await this.logAction(String(orderId), ruleId, ruleName, action.type, "success", true, { email: customerEmail })
             log.info({ email: customerEmail, orderId }, "Email notification sent")
-            return true
+            return { success: true, verified: true, mock: false, emailSent }
           } else {
             log.warn({ orderId }, "Cannot send email: no customer email available")
-            return false
+            return { success: false, verified: false, mock: false, emailSent: false }
           }
         }
 
@@ -449,15 +486,15 @@ Return ONLY valid JSON:
               await this.logAction(String(orderId), ruleId, ruleName, action.type, fulfillResult.success ? "success" : "failed", fulfillResult.success, fulfillResult)
               if (!fulfillResult.success) {
                 log.error({ orderId, error: fulfillResult.error }, "Fulfill order failed")
-                return false
+                return { success: false, verified: false, mock: false, emailSent: false }
               }
             }
             await this.shopify.addOrderTags(Number(orderId), ["fulfilled", "quilo_fulfilled"])
             log.info({ orderId }, "Order fulfilled successfully")
-            return true
+            return { success: true, verified: true, mock: false, emailSent: false }
           } else {
             log.info({ orderId }, "[mock] Order fulfilled (no Shopify connection)")
-            return true
+            return { success: true, verified: false, mock: true, emailSent: false }
           }
         }
 
@@ -481,20 +518,21 @@ Return ONLY valid JSON:
                 appliesOncePerCustomer: true,
               },
             })
+            let emailSent = false
             if (customerEmail) {
               const emailContent = buildOrderNotificationEmail({
                 orderId: String(orderId || "N/A"),
                 action: "Discount Created",
                 details: `Use discount code **${discountCode}** at checkout for your next order. Valid for 30 days.`,
               })
-              await sendEmail({ to: customerEmail, subject: emailContent.subject, html: emailContent.html })
+              emailSent = await addEmailJob(customerEmail, emailContent.subject, emailContent.html)
             }
             await this.logAction(String(orderId), ruleId, ruleName, action.type, "success", true, { discountCode })
             log.info({ discountCode, orderId }, "Discount created successfully")
-            return true
+            return { success: true, verified: true, mock: false, emailSent }
           } else {
             log.info({ discountCode }, "[mock] Discount created (no Shopify connection)")
-            return true
+            return { success: true, verified: false, mock: true, emailSent: false }
           }
         }
 
@@ -505,10 +543,10 @@ Return ONLY valid JSON:
             await this.shopify.updateProduct(Number(productId), updates)
             await this.logAction(String(orderId), ruleId, ruleName, action.type, "success", true, { productId })
             log.info({ productId }, "Product updated successfully")
-            return true
+            return { success: true, verified: true, mock: false, emailSent: false }
           } else {
             log.info({ productId }, "[mock] Product updated (no Shopify connection)")
-            return true
+            return { success: true, verified: false, mock: true, emailSent: false }
           }
         }
 
@@ -521,16 +559,12 @@ Return ONLY valid JSON:
               timestamp: new Date().toISOString(),
               data,
             }
-            await fetch(targetUrl, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(payload),
-            })
-            await this.logAction(String(orderId), ruleId, ruleName, action.type, "success", true, { url: targetUrl })
-            log.info({ url: targetUrl, orderId }, "Webhook sent successfully")
-            return true
+            const delivered = await addWebhookDelivery(targetUrl, payload)
+            await this.logAction(String(orderId), ruleId, ruleName, action.type, delivered ? "success" : "failed", delivered, { url: targetUrl })
+            log.info({ url: targetUrl, orderId, delivered }, "Webhook " + (delivered ? "sent successfully" : "delivery failed"))
+            return { success: delivered, verified: delivered, mock: false, emailSent: false }
           }
-          return false
+          return { success: false, verified: false, mock: false, emailSent: false }
         }
 
         case "Update order tags": {
@@ -539,21 +573,21 @@ Return ONLY valid JSON:
             const tagResult = await this.shopify.addOrderTags(Number(orderId), tags)
             await this.logAction(String(orderId), ruleId, ruleName, action.type, "success", tagResult.success, tagResult)
             log.info({ orderId, tags }, "Order tags updated successfully")
-            return true
+            return { success: true, verified: tagResult.success, mock: false, emailSent: false }
           } else {
             log.info({ orderId, tags }, "[mock] Order tags updated (no Shopify connection)")
-            return true
+            return { success: true, verified: false, mock: true, emailSent: false }
           }
         }
 
         default:
           log.warn({ actionType: action.type }, "Unknown action type")
-          return false
+          return { success: false, verified: false, mock: false, emailSent: false }
       }
     } catch (error) {
       await this.logAction(String(orderId), ruleId, ruleName, action.type, "failed", false, null, (error as Error).message)
       log.error({ err: error, actionType: action.type }, "Action failed")
-      return false
+      return { success: false, verified: false, mock: false, emailSent: false }
     }
   }
 }

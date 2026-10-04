@@ -103,8 +103,8 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
               />
             </div>
             <nav className="hidden md:flex gap-4 lg:gap-6">
-              <a className="text-primary font-bold border-b-2 border-primary pb-1 text-[12px] tracking-[0.05em]" href="#">All Stores</a>
-              <a className="text-on-surface-variant font-medium hover:text-primary transition-colors text-[12px] tracking-[0.05em]" href="#">Returns Hub</a>
+              <a className="text-primary font-bold border-b-2 border-primary pb-1 text-[12px] tracking-[0.05em]" href="/dashboard/stores">All Stores</a>
+              <a className="text-on-surface-variant font-medium hover:text-primary transition-colors text-[12px] tracking-[0.05em]" href="/dashboard/orders">Returns Hub</a>
             </nav>
           </div>
           <div className="flex items-center gap-1 sm:gap-2 lg:gap-4">

@@ -83,8 +83,6 @@ export default function OrdersPage() {
         body: JSON.stringify({ storeId }),
       })
       if (res.ok) {
-        const data = await res.json()
-        setOrders((prev) => [...prev as Order[], ...(data.synced ? [] : [])])
         fetchOrders()
       }
     } catch (err) {

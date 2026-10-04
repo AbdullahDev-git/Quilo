@@ -84,7 +84,7 @@ Return ONLY valid JSON with this structure:
 }`
 
   const response = await client.models.generateContent({
-    model: "gemini-2.0-flash",
+    model: "gemini-3.8-flash",
     config: {
       systemInstruction: systemPrompt,
       responseMimeType: "application/json",
@@ -139,7 +139,7 @@ Fraud indicators to consider:
 - Rush shipping on expensive items`
 
   const response = await client.models.generateContent({
-    model: "gemini-2.0-flash",
+    model: "gemini-3.8-flash",
     config: {
       systemInstruction: systemPrompt,
       responseMimeType: "application/json",
@@ -198,7 +198,7 @@ Focus on:
 - Automating repetitive tasks`
 
   const response = await client.models.generateContent({
-    model: "gemini-2.0-flash",
+    model: "gemini-3.8-flash",
     config: {
       systemInstruction: systemPrompt,
       responseMimeType: "application/json",
@@ -245,7 +245,7 @@ Return ONLY valid JSON with this structure:
 }`
 
   const response = await client.models.generateContent({
-    model: "gemini-2.0-flash",
+    model: "gemini-3.8-flash",
     config: {
       systemInstruction: systemPrompt,
       responseMimeType: "application/json",
