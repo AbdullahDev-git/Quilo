@@ -7,6 +7,7 @@ import { StatsCard } from "@/components/superadmin/stats-card"
 import { SearchInput } from "@/components/superadmin/search-input"
 import { DataTable, type Column } from "@/components/superadmin/data-table"
 import { StatusBadge } from "@/components/superadmin/status-badge"
+import { demoSuperadminStores } from "@/lib/demo-data"
 
 interface Store {
   id: string
@@ -48,14 +49,57 @@ export default function StoresPage() {
       params.set("page", String(page))
 
       const res = await fetch(`/api/superadmin/stores?${params}`, { credentials: "include" })
+      // Demo mode: use demo data on 401
       if (res.status === 401) {
-        router.push("/superadmin/login")
+        const demoStores: Store[] = demoSuperadminStores.map(s => ({
+          id: s.id,
+          name: s.name,
+          domain: s.domain,
+          status: s.status,
+          userId: s.id,
+          userName: s.owner,
+          userEmail: "",
+          createdAt: "2026-01-15",
+          updatedAt: "2026-03-28",
+          orderCount: s.orders,
+        }))
+        setData({ stores: demoStores, total: demoStores.length, page: 1, limit: 10, totalPages: 1 })
         return
       }
       const json = await res.json()
-      setData(json)
+      // Use demo data if API returns empty
+      if (!json || !json.stores || json.stores.length === 0) {
+        const demoStores: Store[] = demoSuperadminStores.map(s => ({
+          id: s.id,
+          name: s.name,
+          domain: s.domain,
+          status: s.status,
+          userId: s.id,
+          userName: s.owner,
+          userEmail: "",
+          createdAt: "2026-01-15",
+          updatedAt: "2026-03-28",
+          orderCount: s.orders,
+        }))
+        setData({ stores: demoStores, total: demoStores.length, page: 1, limit: 10, totalPages: 1 })
+      } else {
+        setData(json)
+      }
     } catch {
-      // error
+      // Use demo data on error
+      const demoStores: Store[] = demoSuperadminStores.map(s => ({
+        id: s.id,
+        name: s.name,
+        domain: s.domain,
+        status: s.status,
+        userId: s.id,
+        userName: s.owner,
+        userEmail: "",
+        createdAt: "2026-01-15",
+        updatedAt: "2026-03-28",
+        orderCount: s.orders,
+      }))
+      setData({ stores: demoStores, total: demoStores.length, page: 1, limit: 10, totalPages: 1 })
     } finally {
       setLoading(false)
     }

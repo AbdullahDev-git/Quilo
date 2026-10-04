@@ -6,6 +6,7 @@ import { PageHeader } from "@/components/superadmin/page-header"
 import { SearchInput } from "@/components/superadmin/search-input"
 import { DataTable, type Column } from "@/components/superadmin/data-table"
 import { StatusBadge } from "@/components/superadmin/status-badge"
+import { demoSuperadminAuditLog } from "@/lib/demo-data"
 
 interface AuditLog {
   id: string
@@ -54,14 +55,57 @@ export default function AuditLogPage() {
       params.set("page", String(page))
 
       const res = await fetch(`/api/superadmin/audit?${params}`, { credentials: "include" })
+      // Demo mode: use demo data on 401
       if (res.status === 401) {
-        router.push("/superadmin/login")
+        const demoLogs: AuditLog[] = demoSuperadminAuditLog.map(l => ({
+          id: l.id,
+          adminId: "1",
+          event: l.action,
+          description: l.details,
+          ipAddress: l.ip,
+          userAgent: null,
+          metadata: null,
+          createdAt: l.timestamp,
+          adminEmail: "superadmin@quilo.app",
+          adminName: "Super Admin",
+        }))
+        setData({ logs: demoLogs, total: demoLogs.length, page: 1, limit: 10, totalPages: 1 })
         return
       }
       const json = await res.json()
-      setData(json)
+      // Use demo data if API returns empty
+      if (!json || !json.logs || json.logs.length === 0) {
+        const demoLogs: AuditLog[] = demoSuperadminAuditLog.map(l => ({
+          id: l.id,
+          adminId: "1",
+          event: l.action,
+          description: l.details,
+          ipAddress: l.ip,
+          userAgent: null,
+          metadata: null,
+          createdAt: l.timestamp,
+          adminEmail: "superadmin@quilo.app",
+          adminName: "Super Admin",
+        }))
+        setData({ logs: demoLogs, total: demoLogs.length, page: 1, limit: 10, totalPages: 1 })
+      } else {
+        setData(json)
+      }
     } catch {
-      // error
+      // Use demo data on error
+      const demoLogs: AuditLog[] = demoSuperadminAuditLog.map(l => ({
+        id: l.id,
+        adminId: "1",
+        event: l.action,
+        description: l.details,
+        ipAddress: l.ip,
+        userAgent: null,
+        metadata: null,
+        createdAt: l.timestamp,
+        adminEmail: "superadmin@quilo.app",
+        adminName: "Super Admin",
+      }))
+      setData({ logs: demoLogs, total: demoLogs.length, page: 1, limit: 10, totalPages: 1 })
     } finally {
       setLoading(false)
     }

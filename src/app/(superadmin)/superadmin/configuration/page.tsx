@@ -31,6 +31,25 @@ const categoryIcons: Record<string, string> = {
   plans: "payments",
 }
 
+const demoConfigs: ConfigItem[] = [
+  { id: "1", key: "platform_name", value: "Quilo", displayValue: "Quilo", category: "platform", label: "Platform Name", type: "text", description: "Name of the platform" },
+  { id: "2", key: "platform_url", value: "https://quilo.pk", displayValue: "https://quilo.pk", category: "platform", label: "Platform URL", type: "text", description: "Main platform URL" },
+  { id: "3", key: "support_email", value: "support@quilo.pk", displayValue: "support@quilo.pk", category: "platform", label: "Support Email", type: "text", description: "Support contact email" },
+  { id: "4", key: "maintenance_mode", value: "false", displayValue: "Disabled", category: "platform", label: "Maintenance Mode", type: "boolean", description: "Enable maintenance mode" },
+  { id: "5", key: "session_timeout", value: "24", displayValue: "24 hours", category: "security", label: "Session Timeout", type: "number", description: "Session timeout in hours" },
+  { id: "6", key: "max_login_attempts", value: "5", displayValue: "5 attempts", category: "security", label: "Max Login Attempts", type: "number", description: "Maximum login attempts before lockout" },
+  { id: "7", key: "require_2fa", value: "true", displayValue: "Required", category: "security", label: "Require 2FA", type: "boolean", description: "Require two-factor authentication for admins" },
+  { id: "8", key: "smtp_host", value: "smtp.gmail.com", displayValue: "smtp.gmail.com", category: "smtp", label: "SMTP Host", type: "text", description: "SMTP server host" },
+  { id: "9", key: "smtp_port", value: "587", displayValue: "587", category: "smtp", label: "SMTP Port", type: "number", description: "SMTP server port" },
+  { id: "10", key: "smtp_from", value: "noreply@quilo.pk", displayValue: "noreply@quilo.pk", category: "smtp", label: "From Email", type: "text", description: "Sender email address" },
+  { id: "11", key: "lemonsqueezy_api_key", value: null, displayValue: "••••••••", category: "api_keys", label: "Lemon Squeezy API Key", type: "password", description: "Lemon Squeezy API key for billing" },
+  { id: "12", key: "gemini_api_key", value: null, displayValue: "••••••••", category: "api_keys", label: "Gemini API Key", type: "password", description: "Google Gemini API key for AI features" },
+  { id: "13", key: "free_plan_seats", value: "1", displayValue: "1 seat", category: "plans", label: "Free Plan Seats", type: "number", description: "Seats included in Free plan" },
+  { id: "14", key: "starter_plan_seats", value: "3", displayValue: "3 seats", category: "plans", label: "Starter Plan Seats", type: "number", description: "Seats included in Starter plan" },
+  { id: "15", key: "pro_plan_seats", value: "5", displayValue: "5 seats", category: "plans", label: "Pro Plan Seats", type: "number", description: "Seats included in Pro plan" },
+  { id: "16", key: "enterprise_plan_seats", value: "999", displayValue: "999 seats", category: "plans", label: "Enterprise Plan Seats", type: "number", description: "Seats included in Enterprise plan" },
+]
+
 export default function ConfigurationPage() {
   const router = useRouter()
   const [configs, setConfigs] = React.useState<ConfigItem[]>([])
@@ -51,10 +70,22 @@ export default function ConfigurationPage() {
     setLoading(true)
     try {
       const res = await fetch("/api/superadmin/config", { credentials: "include" })
-      if (res.status === 401) { router.push("/superadmin/login"); return }
+      // Demo mode: use demo data on 401
+      if (res.status === 401) {
+        setConfigs(demoConfigs)
+        return
+      }
       const data = await res.json()
-      setConfigs(data.configs || [])
-    } catch { /* */ } finally { setLoading(false) }
+      // Use demo data if API returns empty
+      if (!data || !data.configs || data.configs.length === 0) {
+        setConfigs(demoConfigs)
+      } else {
+        setConfigs(data.configs || [])
+      }
+    } catch {
+      // Use demo data on error
+      setConfigs(demoConfigs)
+    } finally { setLoading(false) }
   }
 
   function handleChange(key: string, value: string) {

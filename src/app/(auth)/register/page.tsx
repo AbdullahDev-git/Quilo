@@ -8,7 +8,7 @@ import { useAuth } from "@/lib/auth-context"
 
 export default function RegisterPage() {
   const router = useRouter()
-  const { register } = useAuth()
+  const { register, login } = useAuth()
   const [name, setName] = React.useState("")
   const [email, setEmail] = React.useState("")
   const [password, setPassword] = React.useState("")
@@ -26,6 +26,24 @@ export default function RegisterPage() {
     toast.success("Account created!")
     router.push("/onboarding")
   }
+
+  const handleDemoLogin = async () => {
+    setLoading(true)
+    const { error } = await login("demo@quilo.app", "demo1234")
+    if (error) {
+      const { error: regError } = await register("Demo User", "demo@quilo.app", "demo1234")
+      setLoading(false)
+      if (regError) {
+        toast.error("Demo login failed: " + regError)
+        return
+      }
+    } else {
+      setLoading(false)
+    }
+    toast.success("Welcome to Quilo Demo!")
+    router.push("/dashboard")
+  }
+
   return (
     <div className="min-h-screen bg-[#f8f9ff] flex items-center justify-center p-4">
       <main className="w-full max-w-[440px] flex flex-col items-center">
@@ -39,8 +57,29 @@ export default function RegisterPage() {
             <h1 className="text-[24px] font-semibold text-[#0b1c30] mb-1 tracking-tight">Create your account</h1>
             <p className="text-body-md text-on-surface-variant">Experience seamless automation with Quilo.</p>
           </header>
-          <>
-            <button type="button" onClick={() => { window.location.href = "/api/auth/google" }} className="flex items-center justify-center w-full gap-2 py-2.5 border border-[#c8c4d5] rounded-lg text-body-md text-[#0b1c30] hover:bg-[#e5eeff] transition-colors active:scale-[0.98] mb-6">
+
+          {/* Demo Login Button */}
+          <button
+            type="button"
+            onClick={handleDemoLogin}
+            disabled={loading}
+            className="w-full py-3 bg-gradient-to-r from-[#62fae3] to-[#2dd4bf] text-[#007165] rounded-lg text-body-md font-bold shadow-md hover:opacity-90 transition-all active:scale-[0.98] disabled:opacity-50 mb-4 flex items-center justify-center gap-2"
+          >
+            <span className="material-symbols-outlined text-[20px]">play_circle</span>
+            {loading ? "Entering Demo..." : "Enter Demo (One Click)"}
+          </button>
+          <p className="text-[12px] text-muted-foreground text-center mb-6">No signup needed — explore the prototype instantly</p>
+
+          <div className="relative mb-6">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-[#c8c4d5]"/>
+            </div>
+            <div className="relative flex justify-center">
+              <span className="bg-white px-4 text-body-sm text-muted-foreground">or sign up with email</span>
+            </div>
+          </div>
+
+          <button type="button" onClick={() => { window.location.href = "/api/auth/google" }} className="flex items-center justify-center w-full gap-2 py-2.5 border border-[#c8c4d5] rounded-lg text-body-md text-[#0b1c30] hover:bg-[#e5eeff] transition-colors active:scale-[0.98] mb-6">
               <svg height="20" viewBox="0 0 24 24" width="20">
                 <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
                 <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
@@ -49,15 +88,6 @@ export default function RegisterPage() {
               </svg>
               Sign up with Google
             </button>
-            <div className="relative mb-6">
-              <div className="absolute inset-0 flex items-center">
-                <div className="w-full border-t border-[#c8c4d5]"/>
-              </div>
-              <div className="relative flex justify-center">
-                <span className="bg-white px-4 text-body-sm text-muted-foreground">or sign up with email</span>
-              </div>
-            </div>
-          </>
           <form onSubmit={handleRegister}>
           <div className="space-y-5">
             <div>

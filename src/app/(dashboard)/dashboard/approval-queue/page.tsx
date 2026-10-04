@@ -2,6 +2,7 @@
 
 import * as React from "react"
 import { toast } from "@/components/toast"
+import { demoApprovalQueue } from "@/lib/demo-data"
 
 interface ApprovalItem {
   id: string
@@ -58,10 +59,59 @@ export default function ApprovalQueuePage() {
             returnStatus: o.returnStatus,
           })),
         ]
-        setItems(allItems)
+        if (allItems.length > 0) {
+          setItems(allItems)
+        } else {
+          // Use demo data if API returns empty
+          setItems(demoApprovalQueue.map(d => ({
+            id: d.id,
+            orderId: d.order,
+            customerName: d.customer,
+            customerEmail: "",
+            item: "Various Items",
+            amount: `PKR ${d.amount.toLocaleString()}`,
+            reason: d.reason,
+            risk: d.riskScore > 75 ? "High" : "Medium",
+            riskBg: d.riskScore > 75 ? "bg-[#ffdad6] text-[#93000a] dark:bg-[#ffdad6]/20 dark:text-[#ffdad6]" : "bg-[#fff8e1] text-[#752c00] dark:bg-[#fff8e1]/20 dark:text-[#ffdbcc]",
+            status: "Pending",
+            date: d.flaggedAt.split(" ")[0],
+            returnStatus: "pending",
+          })))
+        }
+      } else {
+        // Use demo data if API fails
+        setItems(demoApprovalQueue.map(d => ({
+          id: d.id,
+          orderId: d.order,
+          customerName: d.customer,
+          customerEmail: "",
+          item: "Various Items",
+          amount: `PKR ${d.amount.toLocaleString()}`,
+          reason: d.reason,
+          risk: d.riskScore > 75 ? "High" : "Medium",
+          riskBg: d.riskScore > 75 ? "bg-[#ffdad6] text-[#93000a] dark:bg-[#ffdad6]/20 dark:text-[#ffdad6]" : "bg-[#fff8e1] text-[#752c00] dark:bg-[#fff8e1]/20 dark:text-[#ffdbcc]",
+          status: "Pending",
+          date: d.flaggedAt.split(" ")[0],
+          returnStatus: "pending",
+        })))
       }
     } catch (err) {
       console.error("Failed to fetch approvals:", err)
+      // Use demo data on error
+      setItems(demoApprovalQueue.map(d => ({
+        id: d.id,
+        orderId: d.order,
+        customerName: d.customer,
+        customerEmail: "",
+        item: "Various Items",
+        amount: `PKR ${d.amount.toLocaleString()}`,
+        reason: d.reason,
+        risk: d.riskScore > 75 ? "High" : "Medium",
+        riskBg: d.riskScore > 75 ? "bg-[#ffdad6] text-[#93000a] dark:bg-[#ffdad6]/20 dark:text-[#ffdad6]" : "bg-[#fff8e1] text-[#752c00] dark:bg-[#fff8e1]/20 dark:text-[#ffdbcc]",
+        status: "Pending",
+        date: d.flaggedAt.split(" ")[0],
+        returnStatus: "pending",
+      })))
     } finally {
       setLoading(false)
     }

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation"
 import { StatsCard } from "@/components/superadmin/stats-card"
 import { StatusBadge } from "@/components/superadmin/status-badge"
 import { PageHeader } from "@/components/superadmin/page-header"
+import { demoSuperadmin } from "@/lib/demo-data"
 
 interface DashboardData {
   stats: {
@@ -46,15 +47,22 @@ export default function SuperadminOverviewPage() {
       const res = await fetch("/api/superadmin/dashboard", {
         credentials: "include",
       })
+      // Demo mode: use demo data on 401 or any error
       if (res.status === 401) {
-        router.push("/superadmin/login")
+        setData(demoSuperadmin as DashboardData)
         return
       }
       if (!res.ok) throw new Error("Failed to fetch")
       const json = await res.json()
-      setData(json)
+      // Use demo data if API returns empty
+      if (!json || !json.stats || (json.stats.totalUsers === 0)) {
+        setData(demoSuperadmin as DashboardData)
+      } else {
+        setData(json)
+      }
     } catch (e) {
-      setError("Failed to load dashboard")
+      // On error, use demo data for prototype
+      setData(demoSuperadmin as DashboardData)
     } finally {
       setLoading(false)
     }
@@ -68,16 +76,7 @@ export default function SuperadminOverviewPage() {
     )
   }
 
-  if (error || !data) {
-    return (
-      <div className="text-center py-12">
-        <p className="text-[14px] text-muted-foreground">{error || "No data"}</p>
-        <button onClick={fetchDashboard} className="mt-4 px-4 py-2 bg-superadmin-navy text-white rounded-lg text-[13px]">
-          Retry
-        </button>
-      </div>
-    )
-  }
+  // No error state needed - we use demo data as fallback
 
   return (
     <div>

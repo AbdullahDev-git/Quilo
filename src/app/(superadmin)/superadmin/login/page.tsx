@@ -51,6 +51,15 @@ export default function SuperadminLoginPage() {
     }
   }
 
+  const handleDemoLogin = async () => {
+    setLoading(true)
+    // Set demo session cookie for middleware
+    document.cookie = "superadmin_session=demo-session-token; path=/; max-age=86400; SameSite=Lax"
+    toast.success("Welcome to Superadmin Demo!")
+    router.push("/superadmin")
+    router.refresh()
+  }
+
   const handleVerifyTotp = async (e: React.FormEvent) => {
     e.preventDefault()
     setLoading(true)
@@ -98,6 +107,18 @@ export default function SuperadminLoginPage() {
             ? "Access the admin console"
             : "Enter the code from your authenticator app"}
         </p>
+
+        {/* Demo Login Button */}
+        <button
+          type="button"
+          onClick={handleDemoLogin}
+          disabled={loading}
+          className="w-full py-3 bg-gradient-to-r from-superadmin-accent to-superadmin-blue text-white rounded-lg text-[14px] font-bold shadow-md hover:opacity-90 transition-all active:scale-[0.98] disabled:opacity-50 mb-4 flex items-center justify-center gap-2"
+        >
+          <span className="material-symbols-outlined text-[20px]">admin_panel_settings</span>
+          {loading ? "Entering Demo..." : "Enter Demo Admin (One Click)"}
+        </button>
+        <p className="text-[11px] text-muted-foreground text-center mb-6">Explore the admin console instantly</p>
 
         {step === "credentials" ? (
           <form onSubmit={handleLogin} className="space-y-4">

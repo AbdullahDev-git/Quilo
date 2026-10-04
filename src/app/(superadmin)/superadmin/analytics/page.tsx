@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation"
 import { PageHeader } from "@/components/superadmin/page-header"
 import { StatsCard } from "@/components/superadmin/stats-card"
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, BarChart, Bar, PieChart, Pie, Cell } from "recharts"
+import { demoSuperadminAnalytics } from "@/lib/demo-data"
 
 interface AnalyticsData {
   totals: {
@@ -26,6 +27,36 @@ interface AnalyticsData {
 
 const COLORS = ["#f59e0b", "#3b82f6", "#8b5cf6", "#10b981", "#ef4444", "#06b6d4", "#ec4899", "#84cc16"]
 
+const demoAnalyticsData: AnalyticsData = {
+  totals: {
+    users: 1247,
+    stores: 3892,
+    rules: 2485,
+    activity: 156830,
+    triggers: 2345,
+  },
+  charts: {
+    userGrowth: demoSuperadminAnalytics.dailySignups.map(d => ({ date: d.date, count: d.signups })),
+    storeGrowth: demoSuperadminAnalytics.dailySignups.map(d => ({ date: d.date, count: Math.round(d.signups * 2.5) })),
+    ruleGrowth: demoSuperadminAnalytics.dailySignups.map(d => ({ date: d.date, count: Math.round(d.signups * 3.2) })),
+    activityGrowth: demoSuperadminAnalytics.dailySignups.map(d => ({ date: d.date, count: d.orders })),
+  },
+  topRules: [
+    { name: "Auto Exchange", triggerCount: 412, status: "active" },
+    { name: "Auto Refund", triggerCount: 248, status: "active" },
+    { name: "Fraud Detection", triggerCount: 87, status: "active" },
+    { name: "Return Approval", triggerCount: 156, status: "active" },
+    { name: "Email Notification", triggerCount: 523, status: "active" },
+  ],
+  activityByType: [
+    { event: "user.registered", count: 47 },
+    { event: "store.connected", count: 89 },
+    { event: "rule.triggered", count: 2456 },
+    { event: "fraud.alert", count: 123 },
+    { event: "payment.processed", count: 567 },
+  ],
+}
+
 export default function AnalyticsPage() {
   const router = useRouter()
   const [data, setData] = React.useState<AnalyticsData | null>(null)
@@ -40,14 +71,21 @@ export default function AnalyticsPage() {
     setLoading(true)
     try {
       const res = await fetch(`/api/superadmin/analytics?days=${days}`, { credentials: "include" })
+      // Demo mode: use demo data on 401
       if (res.status === 401) {
-        router.push("/superadmin/login")
+        setData(demoAnalyticsData)
         return
       }
       const json = await res.json()
-      setData(json)
+      // Use demo data if API returns empty
+      if (!json || !json.totals || json.totals.users === 0) {
+        setData(demoAnalyticsData)
+      } else {
+        setData(json)
+      }
     } catch {
-      // error
+      // Use demo data on error
+      setData(demoAnalyticsData)
     } finally {
       setLoading(false)
     }
